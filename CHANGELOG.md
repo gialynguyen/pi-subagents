@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Split Windows unit and integration tests across two isolated CI shards while preserving the per-process concurrency limit.
+
 ### Fixed
 
 - Update the development SDK and npm-host smoke coverage for Pi 0.86.0, including compatibility with its stricter JSON message types.
