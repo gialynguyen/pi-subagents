@@ -31,6 +31,8 @@ export const CODE_OWNED_EXTERNAL_CLI_ADAPTER_IDS = [
 	"claude-code-writer",
 	"cursor-agent",
 	"cursor-agent-writer",
+	"devin",
+	"devin-writer",
 ] as const;
 export type CodeOwnedExternalCliAdapterId = typeof CODE_OWNED_EXTERNAL_CLI_ADAPTER_IDS[number];
 
@@ -45,6 +47,7 @@ const RESERVED_READ_ONLY_ADAPTERS = [
 	{ name: "claude-code", writer: "claude-code-writer", access: "file-write" },
 	{ name: "codex-exec", writer: "codex-exec-writer", access: "workspace-write" },
 	{ name: "cursor-agent", writer: "cursor-agent-writer", access: "workspace-write" },
+	{ name: "devin", writer: "devin-writer", access: "workspace-write" },
 ] as const;
 
 export function validateCodeOwnedProfileRunner(
@@ -90,20 +93,25 @@ export function resolveExternalCliRunnerStatus(input: {
 	const claudeCodeWriter = input.adapter === "claude-code-writer";
 	const cursorAgent = input.adapter === "cursor-agent";
 	const cursorAgentWriter = input.adapter === "cursor-agent-writer";
+	const devin = input.adapter === "devin";
+	const devinWriter = input.adapter === "devin-writer";
 	const cursor = cursorAgent || cursorAgentWriter;
-	const unsupported = cursor ? PROMPT_FILE_UNSUPPORTED : UNSUPPORTED;
+	const promptFile = cursor || devin || devinWriter;
+	const unsupported = promptFile ? PROMPT_FILE_UNSUPPORTED : UNSUPPORTED;
 	return {
 		type: "external-cli",
 		command: input.command,
 		args: input.args ?? [],
-		promptDelivery: cursor ? "prompt-file" : input.promptDelivery ?? "stdin",
-		adapter: { id: input.adapter ?? "external-cli", version: 1, executionMode: cursor ? "one-shot-prompt-file" : "one-shot-stdin" },
+		promptDelivery: promptFile ? "prompt-file" : input.promptDelivery ?? "stdin",
+		adapter: { id: input.adapter ?? "external-cli", version: 1, executionMode: promptFile ? "one-shot-prompt-file" : "one-shot-stdin" },
 		...(codexExec ? { safety: { sandbox: "read-only" as const, approvalPolicy: "never" as const, ephemeral: true as const } } : {}),
 		...(codexExecWriter ? { safety: { access: "workspace-write" as const, sandbox: "workspace-write" as const, approvalPolicy: "never" as const, ephemeral: true as const } } : {}),
 		...(claudeCode ? { safety: { access: "read-only" as const, authentication: "existing-cli-required" as const, permissionMode: "plan" as const, tools: "none" as const, mcp: "empty-strict" as const, settingSources: "user" as const, userSettingsTrust: "required" as const, sessionPersistence: false as const } } : {}),
 		...(claudeCodeWriter ? { safety: { access: "workspace-write" as const, authentication: "existing-cli-required" as const, permissionMode: "acceptEdits" as const, tools: "Read,Write,Edit,Glob,Grep" as const, mcp: "empty-strict" as const, settingSources: "user" as const, userSettingsTrust: "required" as const, sessionPersistence: false as const } } : {}),
 		...(cursorAgent ? { safety: { access: "read-only" as const, authentication: "cursor-api-key-or-existing-login" as const, mode: "ask" as const, sandbox: "enabled" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
 		...(cursorAgentWriter ? { safety: { access: "workspace-write" as const, authentication: "cursor-api-key-or-existing-login" as const, mode: "print" as const, sandbox: "enabled" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
+		...(devin ? { safety: { access: "read-only" as const, authentication: "existing-cli-required" as const, permissionMode: "auto" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
+		...(devinWriter ? { safety: { access: "workspace-write" as const, authentication: "existing-cli-required" as const, permissionMode: "accept-edits" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
 		...(input.machine ? { machine: input.machine } : {}),
 		capabilities: {
 			stop: true,

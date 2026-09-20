@@ -179,6 +179,43 @@ node --experimental-strip-types --import ./test/support/register-loader.mjs \
 
 The read-only smoke must report `writeCanaryExists: false`. The writer smoke must report `writeCanaryMatches: true`. Both reports record `workspaceTrust: "operator-managed-saved"`, confirm that the external prompt root was added, and include startup duration and terminal proof without raw protocol output, prompts, or credentials. A trust-required error remains terminal; the harness does not retry with a trust, force, or yolo flag.
 
+The built-in `devin` and `devin-writer` profiles are the supported Devin CLI one-shot modes. Both require an installed Devin CLI with an existing local login and a workspace already trusted through Devin's normal interactive trust flow.
+
+| Profile | Access | Devin permission mode |
+|---|---|---|
+| `devin` | Read-only analysis | `auto` (reads auto-approve; writes prompt, which print mode rejects) |
+| `devin-writer` | Explicit workspace edits | `accept-edits` (workspace edits auto-approve) |
+
+Both adapters pass the handoff through Devin's native `--prompt-file` from a private `0600` file in a private temporary directory, so process argv never contains prompt text. Devin emits plain-text output (no JSONL stream mode), so the run's terminal proof is process exit code plus non-empty stdout; stderr is preserved as evidence. The adapters do not pass dangerous, yolo, bypass, sandbox, model, export, config, session resume, or workspace trust flags. User profiles cannot add argv. The `devin` selection identity is reserved for the read-only adapter. Devin stays local-only: saved-machine Herdr placement remains limited to the Claude, Codex, and Cursor adapters because only those have a proven pane-native launch path.
+
+Launch preflight validates `devin --version` and `devin --help` only when a run starts. Discovery, list, status, and native Pi launches do not execute Devin or probe authentication.
+
+The smoke harness restores the operator's real home for the child process only (the test loader isolates `HOME`, but Devin authenticates from a credentials file under the real home) and requires the same disposable-workspace attestation as Cursor:
+
+```bash
+export PI_SUBAGENTS_DEVIN_SMOKE_WORKSPACE=/tmp/pi-subagents-devin-smoke-workspace
+export PI_SUBAGENTS_DEVIN_SMOKE_STATE_ROOT=/tmp/pi-subagents-devin-smoke-state
+export PI_SUBAGENTS_DEVIN_SMOKE_DISPOSABLE=1
+mkdir -p "$PI_SUBAGENTS_DEVIN_SMOKE_WORKSPACE" "$PI_SUBAGENTS_DEVIN_SMOKE_STATE_ROOT"
+mkdir -p "$PI_SUBAGENTS_DEVIN_SMOKE_STATE_ROOT/external-0.devin-prompt"
+```
+
+Trust the exact workspace and prompt directory first with one interactive `devin` session, then run the separate read-only and writer canaries:
+
+```bash
+PI_SUBAGENTS_DEVIN_SMOKE=1 \
+PI_SUBAGENTS_DEVIN_SMOKE_REPORT=/tmp/pi-subagents-devin-smoke.json \
+node --experimental-strip-types --import ./test/support/register-loader.mjs \
+  --test test/integration/devin-smoke.test.ts
+
+PI_SUBAGENTS_DEVIN_WRITER_SMOKE=1 \
+PI_SUBAGENTS_DEVIN_WRITER_SMOKE_REPORT=/tmp/pi-subagents-devin-writer-smoke.json \
+node --experimental-strip-types --import ./test/support/register-loader.mjs \
+  --test test/integration/devin-writer-smoke.test.ts
+```
+
+The read-only smoke must report `writeCanaryExists: false`. The writer smoke must report `writeCanaryMatches: true`. A trust-required error remains terminal; the harness does not retry with a trust bypass flag.
+
 Native `oracle` runs inside Pi and can use its configured read tools. The Claude profiles send the assembled prompt to the local Claude Code CLI through stdin. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
 
 ### External-job state table

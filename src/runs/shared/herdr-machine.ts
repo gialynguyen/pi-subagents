@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExternalProcessStatus, HerdrMachineReference } from "../../shared/types.ts";
 import { getAgentDir, getProjectConfigDir } from "../../shared/utils.ts";
-import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_IDS, type CodeOwnedExternalCliAdapterId } from "./external-cli-contract.ts";
 import type { runExternalCli } from "./external-cli-runner.ts";
 export { shellQuoteRemote as shellQuote } from "./herdr-connection.ts";
 
@@ -20,7 +19,16 @@ const MAX_MACHINE_NAME_LENGTH = 128;
 const HERDR_MACHINE_LIST_TIMEOUT_MS = 7_500;
 const MAX_HERDR_MACHINE_LIST_BYTES = 1024 * 1024;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/u;
-const SUPPORTED_MACHINE_ADAPTERS = new Set<string>(CODE_OWNED_EXTERNAL_CLI_ADAPTER_IDS);
+// Pane-native Herdr placement only implements claude/cursor/codex kinds. New prompt-file
+// adapters stay local-only until a pane-native launch path proves them.
+const SUPPORTED_MACHINE_ADAPTERS = new Set<string>([
+	"claude-code",
+	"claude-code-writer",
+	"codex-exec",
+	"codex-exec-writer",
+	"cursor-agent",
+	"cursor-agent-writer",
+]);
 /** The local ssh process gets only what ssh itself needs; remote runs use the machine's own credentials. */
 export const HERDR_SSH_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SSH_AUTH_SOCK"] as const;
 
