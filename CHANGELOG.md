@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Update the development SDK and npm-host smoke coverage for Pi 0.86.0, including compatibility with its stricter JSON message types.
+
 ## [0.70.0] - 2026-09-19
 
 ### Highlights
