@@ -2,20 +2,51 @@
 
 ## [Unreleased]
 
+### Added
+
+- In-process RPC `cost` method: returns the same parent-plus-child accounting `/subagent-cost` renders, as versioned data (`{ version: 1, parent, children, childTotal, total, unresolvedAsyncChildren }`), so other extensions can surface subagent spend without scraping slash output. `ping.capabilities.cost` advertises `{ version: 1 }`. The report logic moved unchanged into `src/slash/subagent-cost.ts`; `/subagent-cost` output is identical. Thanks to [@raymondtri](https://github.com/raymondtri) for [#2378](https://github.com/nicobailon/pi-subagents/pull/2378).
+- Emit public lifecycle events for async `workflowScript` roots and their dynamically launched keyed children so companion UIs can follow authoritative run artifacts without scraping terminal output. Thanks to [@navidemad](https://github.com/navidemad) for [#2382](https://github.com/nicobailon/pi-subagents/pull/2382).
+
 ### Changed
 
-- Remove inferred no-edit completion failures and task-wording acceptance escalation. Completion now relies on process, output, explicit acceptance, verification, review, and staged-index gates; mutation observations are diagnostic only. The valid report from [@SuTang-vain](https://github.com/SuTang-vain) led us to remove the unreliable guarantee rather than add more syntax exceptions, replacing [#2351](https://github.com/nicobailon/pi-subagents/issues/2351), [#2353](https://github.com/nicobailon/pi-subagents/issues/2353), and [#2354](https://github.com/nicobailon/pi-subagents/issues/2354) with [#2355](https://github.com/nicobailon/pi-subagents/issues/2355).
-- Clarify that custom agent files replace shadowed bundled definitions wholesale, so custom implementation profiles must declare `acceptanceRole: writer` explicitly to use writer acceptance inference.
-- Split Windows tests across two isolated CI shards and batch repeated foreign-process steering checks while preserving the per-process concurrency limit.
-- Require substantial delegated mutation work to be classified by implementation topology before writer launch, preventing issue-wide writer commissions across independent seams without forcing artificial fanout.
+- Packaged `worker` agents now default to fresh context so implementation briefs do not compete with the parent's unfinished conversation. Explicit and globally configured fork context remain available. Thanks to [@eduardopicolo-cb](https://github.com/eduardopicolo-cb) for [#2384](https://github.com/nicobailon/pi-subagents/issues/2384).
+- Raise the optional `@earendil-works/pi-ai` peer dependency floor to 0.86.1 so package metadata no longer advertises unsupported older hosts. Thanks to [@samuela](https://github.com/samuela) for [#2373](https://github.com/nicobailon/pi-subagents/issues/2373).
+- Keep the full `subagent` tool dormant until an authorized request activates it through the compact discovery loader, reducing unrelated prompt context without changing direct command, RPC, TUI, or nested-child execution. Thanks to [@Knimoms](https://github.com/Knimoms) for [#2380](https://github.com/nicobailon/pi-subagents/pull/2380).
 
 ### Fixed
 
-- Apply `subagents.defaultModel`, `defaultProvider`, `defaultThinking`, and the model-tier fields of `agentOverrides.<name>` to runtime-registered agents. They previously skipped every operator model setting and silently inherited the parent session model. Thanks to @bioShaun for #2368.
+- Prevent duplicate completion notifications when multiple extension registrations for the same session coexist in one process. Thanks to [@hongchu098](https://github.com/hongchu098) for [#2389](https://github.com/nicobailon/pi-subagents/issues/2389).
+- Make running and failed external CLI logs inspectable in Fleet, tool status, and TUI surfaces with bounded, contained reads ([#2375](https://github.com/nicobailon/pi-subagents/issues/2375), thanks [@Shujakuinkuraudo](https://github.com/Shujakuinkuraudo)).
+- Preserve and safely prune Pi 0.87 context edits when forking sessions, including replacement content and signed Anthropic thinking blocks.
+- Restore watchdog reviews and permission arbitration on the stable Pi 0.86.1 host package layout. Thanks to [@zieglar](https://github.com/zieglar) for the reproduction and version comparison in [#2377](https://github.com/nicobailon/pi-subagents/issues/2377).
+- Allow completed retained agents to resume when their own descendant allowlist excludes them, while preserving both parent authority and the descendant restriction; legacy retained children without original-authority recovery metadata now fail closed. Thanks to [@riskywhat](https://github.com/riskywhat) for [#2379](https://github.com/nicobailon/pi-subagents/issues/2379), building on the allowlist work in [#2338](https://github.com/nicobailon/pi-subagents/pull/2338) credited to [@shkrabov](https://github.com/shkrabov).
+- Report cumulative usage on structured delegation updates without treating unavailable provider cache counters as zero. Thanks to [@bioShaun](https://github.com/bioShaun) for [#2374](https://github.com/nicobailon/pi-subagents/pull/2374).
+- Match MCP direct tool names to the names pi-mcp-adapter registers when a server name prefixes its own tool names, sanitize server prefixes the same way, and honor the adapter's `mcp` prefix mode and per-server `toolPrefix`. Thanks to [@qsgy-edge](https://github.com/qsgy-edge) for [#2395](https://github.com/nicobailon/pi-subagents/pull/2395).
+
+## [0.70.1] - 2026-09-20
+
+### Highlights
+
+- Delegated tasks no longer fail solely because they finish without editing files.
+- Runtime-added agents now honor configured model, provider, and thinking preferences.
+- Foreground children launch reliably when Pi is installed outside the extension's own dependency tree.
+- Pi 0.86.1 support improves watchdog checks, provider-backed summaries, packaging, and standalone use.
+
+### Changed
+
+- Stop guessing whether task wording requires file edits. Successful tasks now follow their process result and explicitly configured output and acceptance checks. The `completionGuard` setting and `PI_SUBAGENTS_LLM_INTENT_ARBITER` switch have been removed. Thanks to [@SuTang-vain](https://github.com/SuTang-vain) for the reproduction that led to this change in [#2351](https://github.com/nicobailon/pi-subagents/issues/2351).
+- Clarify that a custom agent file fully replaces a bundled agent with the same name. Custom implementation agents must declare `acceptanceRole: writer` to receive writer acceptance defaults.
+- Update delegation guidance so large changes are split only when they contain independently testable parts.
+
+### Fixed
+
+- Apply `subagents.defaultModel`, `defaultProvider`, `defaultThinking`, and model-tier overrides to runtime-registered agents. Thanks to [@bioShaun](https://github.com/bioShaun) for [#2368](https://github.com/nicobailon/pi-subagents/pull/2368).
 - Show each workflow child's resolved model and thinking level in parent status output. Thanks to [@grahama1970](https://github.com/grahama1970) for [#2364](https://github.com/nicobailon/pi-subagents/pull/2364).
-- Fix watchdog helper working-directory context and pruned-fork overflow summaries on Pi 0.86.1, and cut active SDK and standalone support over to 0.86.1. Thanks to [@chem](https://github.com/chem) for [#2362](https://github.com/nicobailon/pi-subagents/issues/2362).
+- Preserve watchdog working-directory context and authenticated provider behavior for pruned-fork overflow summaries on Pi 0.86.1. Thanks to [@chem](https://github.com/chem) for [#2362](https://github.com/nicobailon/pi-subagents/issues/2362).
 - Launch the packaged inspector bootstrap from its compiled JavaScript instead of an absent TypeScript source. Thanks to [@pablog12](https://github.com/pablog12) for [#2360](https://github.com/nicobailon/pi-subagents/issues/2360).
-- Load the host `pi-coding-agent` for in-process child sessions from the resolved host package root instead of only a bare specifier, so foreground children launch on npm-hosted Pi installations where the extension's own `node_modules` tree cannot resolve the bare module (peers installed outside that tree). Thanks to [@nazerim](https://github.com/nazerim) for #2348.
+- Resolve the host `pi-coding-agent` package and its exports from the Pi installation that owns the session, so foreground children work across npm-hosted layouts without loading a second SDK instance. Thanks to [@nazerim](https://github.com/nazerim) for [#2348](https://github.com/nicobailon/pi-subagents/issues/2348).
+- Show an actionable expand shortcut when a host cannot provide its configured keybinding label.
+- Stop test-only background runners when their owning test process exits, and isolate test temporary data to reduce filesystem and Spotlight load.
 
 ## [0.70.0] - 2026-09-19
 
