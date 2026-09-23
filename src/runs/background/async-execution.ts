@@ -78,6 +78,7 @@ import { usageBudgetState } from "../shared/usage-budget.ts";
 import type { ImportedAsyncRoot } from "./chain-root-attachment.ts";
 import type { SessionLeaseRequest } from "../shared/session-lease.ts";
 import { finalizeProcessTerminal, initializeProcessTerminal, readProcessTerminal } from "./process-terminal.ts";
+import { persistRunnerStartupFailure } from "./runner-startup-failure.ts";
 import type { ActiveAsyncCapacityHandle } from "./active-async-capacity.ts";
 import { statusStepDescription } from "./chain-append.ts";
 import { SUBAGENT_PROCESS_TERMINAL_EVENT } from "../../shared/types.ts";
@@ -85,6 +86,7 @@ import { assertAgentAllowedByCapabilityCeiling, intersectSubagentCapabilityCeili
 import { resolveLaunchBinding } from "../../shared/launch-contract.ts";
 import { resolvePermissionRules, type PermissionConfig } from "../shared/permissions.ts";
 import { normalizeExtensionBindings, omitExtensionBindingsEnv, type ExtensionBindings } from "../shared/extension-bindings.ts";
+import { omitGitRoutingEnv } from "../shared/git-environment.ts";
 import { assertWorkflowLaneKey, normalizeWorkflowLaneMetadata } from "../shared/lane-metadata.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 
@@ -153,7 +155,7 @@ function resolveJitiCliPath(): string | undefined {
 const jitiCliPath = resolveJitiCliPath();
 const asyncRunnerSourcePath = path.join(
 	path.dirname(fileURLToPath(import.meta.url)),
-	`subagent-runner${path.extname(fileURLToPath(import.meta.url))}`,
+	`subagent-runner-bootstrap${path.extname(fileURLToPath(import.meta.url))}`,
 );
 const sourceUnderNodeModules = asyncRunnerSourcePath.split(path.sep).some((segment) => segment.toLowerCase() === "node_modules");
 function supportsNativeRunner(nodeExecutable: string): boolean {
@@ -615,37 +617,8 @@ async function completeRunnerStartupHandshake(
 }
 
 function persistPreProceedStartupFailure(asyncDir: string, runId: string, runnerProcessInstanceId: string, sessionId: string | undefined, completionOwnerId: string | undefined, message: string): void {
-	const now = Date.now();
 	try {
-		const statusPath = path.join(asyncDir, "status.json");
-		let status: Partial<AsyncStatus> = {};
-		try {
-			status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as Partial<AsyncStatus>;
-		} catch {}
-		const existingProcessTerminal = status.processTerminal?.state === "observed" || status.processTerminal?.state === "unknown"
-			? status.processTerminal : undefined;
-		writePrivateAtomicJson(statusPath, {
-			...status,
-			runId,
-			...(sessionId ? { sessionId } : {}),
-			...(completionOwnerId ? { completionOwnerId } : {}),
-			state: "failed",
-			lastUpdate: now,
-			error: message,
-			processTerminal: existingProcessTerminal ?? {
-				version: 1,
-				state: "not-started",
-				runId,
-				runnerProcessInstanceId,
-			},
-		});
-		writePrivateAtomicJson(path.join(asyncDir, "process-terminal-candidate.json"), {
-			version: 1,
-			runId,
-			runnerProcessInstanceId,
-			writers: {},
-			expectedWriters: { 0: 0 },
-		});
+		persistRunnerStartupFailure({ asyncDir, runId, runnerProcessInstanceId, sessionId, completionOwnerId, message });
 	} catch {
 		// Startup failures must still return the original launch error.
 	}
@@ -753,7 +726,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 				? [...preload, "--experimental-strip-types", runner, cfgPath]
 				: [...preload, jitiCliPath!, runner, cfgPath];
 		const runnerEnv: NodeJS.ProcessEnv = {
-			...omitExtensionBindingsEnv(process.env),
+			...omitGitRoutingEnv(omitExtensionBindingsEnv(process.env)),
 			...childCacheRetentionEnv(),
 			[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
 			// npm must override inherited bundled layouts (#2071); binaries retain release assets.
