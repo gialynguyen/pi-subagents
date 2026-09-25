@@ -1742,6 +1742,8 @@ export type AgentRunnerConfig =
 		args?: string[];
 		promptDelivery?: "stdin";
 		capabilities?: ExternalCliCapabilityNarrowing;
+		/** Internal: caller-mentioned Devin permission mode, carried to the devin adapter's launch resolution. */
+		devinPermissionMode?: DevinPermissionMode;
 	}
 	| {
 		type: "external-job";
@@ -1782,6 +1784,8 @@ export interface ExternalCliCapabilities {
 	extensionBindings: false;
 }
 
+export type DevinPermissionMode = "auto" | "accept-edits" | "smart" | "dangerous";
+
 export interface ExternalCliReceiptMetadata {
 	adapter: { id: "external-cli" | "codex-exec" | "codex-exec-writer" | "claude-code" | "claude-code-writer" | "cursor-agent" | "cursor-agent-writer" | "devin" | "devin-writer" | "grok-build"; version: 1; executionMode: "one-shot-stdin" | "one-shot-prompt-file" };
 	capabilities: ExternalCliCapabilities;
@@ -1794,8 +1798,8 @@ export interface ExternalCliReceiptMetadata {
 		| { access: "workspace-write"; authentication: "existing-cli-required"; permissionMode: "acceptEdits"; tools: "Read,Write,Edit,Glob,Grep"; mcp: "empty-strict"; settingSources: "user"; userSettingsTrust: "required"; sessionPersistence: false }
 		| { access: "read-only"; authentication: "cursor-api-key-or-existing-login"; mode: "ask"; sandbox: "enabled"; workspaceTrust: "existing-required"; sessionReuse: false }
 		| { access: "workspace-write"; authentication: "cursor-api-key-or-existing-login"; mode: "print"; sandbox: "enabled"; workspaceTrust: "existing-required"; sessionReuse: false }
-		| { access: "read-only"; authentication: "existing-cli-required"; permissionMode: "auto"; workspaceTrust: "existing-required"; sessionReuse: false }
-		| { access: "workspace-write"; authentication: "existing-cli-required"; permissionMode: "accept-edits"; workspaceTrust: "existing-required"; sessionReuse: false };
+		| { access: "read-only"; authentication: "existing-cli-required"; permissionMode: DevinPermissionMode; workspaceTrust: "existing-required"; sessionReuse: false }
+		| { access: "workspace-write"; authentication: "existing-cli-required"; permissionMode: DevinPermissionMode; workspaceTrust: "existing-required"; sessionReuse: false };
 	outputArtifacts?: { stdoutPath?: string; stderrPath?: string; finalOutputPath?: string };
 	handoff: { mode: "fresh" };
 	supervisor: { mode: "unsupported"; reason: string };
@@ -2689,6 +2693,12 @@ export interface ExtensionConfig {
 	 * are rejected with an error.
 	 */
 	toolTimeoutMs?: number;
+	/**
+	 * Devin external-CLI permission mode used when a run does not mention one.
+	 * Precedence: call param > this config > built-in default ("dangerous" for
+	 * devin-writer, "auto" for devin). Invalid values are rejected with an error.
+	 */
+	devinPermissionMode?: DevinPermissionMode;
 	/**
 	 * Global default for the async single-agent `checkpointBeforeDeadlineMs` launch option: the runner requests that
 	 * the child checkpoint and stop this many milliseconds before its run deadline (best-effort). The call param wins; values that

@@ -235,6 +235,8 @@ interface AsyncChainParams {
 	configToolBudget?: ResolvedToolBudget;
 	/** Optional per-call hard toolTimeoutMs override (highest precedence). */
 	callToolTimeoutMs?: number;
+	/** Caller-mentioned Devin external-CLI permission mode for this run. */
+	devinPermissionMode?: "auto" | "accept-edits" | "smart" | "dangerous";
 	/** Global config.toolTimeoutMs (third precedence, after agent frontmatter). */
 	configToolTimeoutMs?: number;
 	/** PI_SUBAGENT_TOOL_TIMEOUT_MS override (lowest precedence). */
@@ -310,6 +312,8 @@ interface AsyncSingleParams {
 	toolTimeoutMs?: number;
 	/** Steer the child to checkpoint and stop this many ms before the run deadline (resolved call param ?? config). */
 	checkpointBeforeDeadlineMs?: number;
+	/** Caller-mentioned Devin external-CLI permission mode for this run. */
+	devinPermissionMode?: "auto" | "accept-edits" | "smart" | "dangerous";
 	toolBudget?: ResolvedToolBudget | ToolBudgetConfig;
 	usageBudget?: UsageBudgetConfig;
 	configToolBudget?: ResolvedToolBudget;
@@ -376,6 +380,8 @@ export interface AsyncRunnerStepBuildParams {
 	configToolBudget?: ResolvedToolBudget;
 	/** Optional per-call hard toolTimeoutMs override from the subagent invocation. */
 	callToolTimeoutMs?: number;
+	/** Caller-mentioned Devin external-CLI permission mode for this run. */
+	devinPermissionMode?: "auto" | "accept-edits" | "smart" | "dangerous";
 	/** Global config.toolTimeoutMs (third precedence, after agent frontmatter). */
 	configToolTimeoutMs?: number;
 	/** PI_SUBAGENT_TOOL_TIMEOUT_MS override (lowest precedence). */
@@ -1129,7 +1135,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 			...(runFanoutPath ? { runFanoutPath } : {}),
 			agent: s.agent,
 			task,
-			...(a.runner ? { runner: a.runner } : {}),
+			...(a.runner ? { runner: { ...a.runner, ...(params.devinPermissionMode ? { devinPermissionMode: params.devinPermissionMode } : {}) } } : {}),
 			...(machine ? { machine } : {}),
 			...(machineEnv ? { machineEnv } : {}),
 			...(params.contextForAgent ? { context: params.contextForAgent(s.agent) } : {}),
@@ -1418,6 +1424,7 @@ export function executeAsyncChain(
 		toolBudget: params.toolBudget,
 		configToolBudget: params.configToolBudget,
 		callToolTimeoutMs: params.callToolTimeoutMs,
+		...(params.devinPermissionMode ? { devinPermissionMode: params.devinPermissionMode } : {}),
 		configToolTimeoutMs: params.configToolTimeoutMs,
 		toolTimeoutMsEnv: params.toolTimeoutMsEnv ?? toolTimeoutFromEnv(),
 		capabilityCeiling,
@@ -2020,7 +2027,7 @@ export function executeAsyncSingle(
 						...(capabilityCeiling ? { capabilityCeiling } : {}),
 						agent,
 						task: taskText,
-						...(agentConfig.runner ? { runner: agentConfig.runner } : {}),
+						...(agentConfig.runner ? { runner: { ...agentConfig.runner, ...(params.devinPermissionMode ? { devinPermissionMode: params.devinPermissionMode } : {}) } } : {}),
 						...(machine ? { machine } : {}),
 						...(!externalRunner && machine && params.reads !== undefined ? { remoteReads: params.reads } : {}),
 						...(machineEnv ? { machineEnv } : {}),

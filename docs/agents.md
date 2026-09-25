@@ -184,9 +184,9 @@ The built-in `devin` and `devin-writer` profiles are the supported Devin CLI one
 | Profile | Access | Devin permission mode |
 |---|---|---|
 | `devin` | Read-only analysis | `auto` (reads auto-approve; writes prompt, which print mode rejects) |
-| `devin-writer` | Explicit workspace edits | `accept-edits` (workspace edits auto-approve) |
+| `devin-writer` | Explicit workspace edits | `dangerous` (bypass) by default; `devinPermissionMode` call param or `config.devinPermissionMode` overrides |
 
-Both adapters pass the handoff through Devin's native `--prompt-file` from a private `0600` file in a private temporary directory, so process argv never contains prompt text. Devin emits plain-text output (no JSONL stream mode), so the run's terminal proof is process exit code plus non-empty stdout; stderr is preserved as evidence. The adapters do not pass dangerous, yolo, bypass, sandbox, model, export, config, session resume, or workspace trust flags. User profiles cannot add argv. The `devin` selection identity is reserved for the read-only adapter. Devin stays local-only: saved-machine Herdr placement remains limited to the Claude, Codex, and Cursor adapters because only those have a proven pane-native launch path.
+Both adapters pass the handoff through Devin's native `--prompt-file` from a private `0600` file in a private temporary directory, so process argv never contains prompt text. Devin emits plain-text output (no JSONL stream mode), so the run's terminal proof is process exit code plus non-empty stdout; stderr is preserved as evidence. The adapters do not pass yolo, bypass, sandbox, model, export, config, session resume, or workspace trust flags. The only variable argv is `--permission-mode`: `devin` defaults to `auto` and `devin-writer` to `dangerous` (bypass), and a `devinPermissionMode` call param or `config.devinPermissionMode` config overrides either. User profiles cannot add argv. The `devin` selection identity is reserved for the read-only adapter. Devin stays local-only: saved-machine Herdr placement remains limited to the Claude, Codex, and Cursor adapters because only those have a proven pane-native launch path.
 
 Launch preflight validates `devin --version` and `devin --help` only when a run starts. Discovery, list, status, and native Pi launches do not execute Devin or probe authentication.
 

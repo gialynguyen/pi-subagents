@@ -196,7 +196,7 @@ function parseExternalCliReceiptMetadata(value: unknown, key: string, source: st
 		const unknownSafety = Object.keys(safetyRecord).filter((field) => !["access", "authentication", "permissionMode", "workspaceTrust", "sessionReuse"].includes(field));
 		if (unknownSafety.length > 0) throw new Error(`${label}.safety has unsupported fields: ${unknownSafety.join(", ")}.`);
 		const writer = adapterRecord.id === "devin-writer";
-		if (safetyRecord.access !== (writer ? "workspace-write" : "read-only") || safetyRecord.authentication !== "existing-cli-required" || safetyRecord.permissionMode !== (writer ? "accept-edits" : "auto") || safetyRecord.workspaceTrust !== "existing-required" || safetyRecord.sessionReuse !== false) throw new Error(`${label}.safety is invalid.`);
+		if (safetyRecord.access !== (writer ? "workspace-write" : "read-only") || safetyRecord.authentication !== "existing-cli-required" || !["auto", "accept-edits", "smart", "dangerous"].includes(String(safetyRecord.permissionMode)) || safetyRecord.workspaceTrust !== "existing-required" || safetyRecord.sessionReuse !== false) throw new Error(`${label}.safety is invalid.`);
 	} else if (adapterRecord.id === "grok-build") {
 		if (!safety || typeof safety !== "object" || Array.isArray(safety)) throw new Error(`${label}.safety is missing.`);
 		const safetyRecord = safety as Record<string, unknown>;

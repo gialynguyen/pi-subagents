@@ -15,7 +15,7 @@ test("maintainer Devin prompt-file writer smoke", { skip: enabled ? undefined : 
 	try {
 		const launch = resolveDevinLaunch({ adapter: "devin-writer", command: "devin", asyncDir: stateRoot, stepIndex: 0 });
 		assert.deepEqual(launch.temporaryDirectories, [promptDirectory]);
-		assert.deepEqual(launch.args, ["-p", "--prompt-file", launch.promptFilePath, "--permission-mode", "accept-edits"]);
+		assert.deepEqual(launch.args, ["-p", "--prompt-file", launch.promptFilePath, "--permission-mode", "dangerous"]);
 		const result = await withDevinSmokeHome(process.env, () => runExternalCli({
 			...launch,
 			temporaryDirectories: [],
@@ -34,7 +34,7 @@ test("maintainer Devin prompt-file writer smoke", { skip: enabled ? undefined : 
 			promptDelivery: "prompt-file",
 			authentication: "existing-cli-required",
 			access: "workspace-write",
-			permissionMode: "accept-edits",
+			permissionMode: "dangerous",
 			workspaceTrust: "operator-managed-saved",
 			sessionReuse: false,
 			exitCode: result.exitCode,

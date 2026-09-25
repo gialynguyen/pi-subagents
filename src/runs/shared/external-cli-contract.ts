@@ -1,4 +1,5 @@
 import type {
+	DevinPermissionMode,
 	ExternalCliReceiptMetadata,
 	ExternalCliCapabilityNarrowing,
 	ExternalCliRunnerStatus,
@@ -6,6 +7,7 @@ import type {
 	ExternalProcessStatus,
 	HerdrMachineReference,
 } from "../../shared/types.ts";
+import { resolveDevinPermissionMode } from "./devin-adapter.ts";
 
 const UNSUPPORTED = {
 	steer: "The one-shot stdin adapter closes input after launch and cannot accept live steer messages.",
@@ -86,6 +88,8 @@ export function resolveExternalCliRunnerStatus(input: {
 	promptDelivery?: "stdin";
 	capabilities?: ExternalCliCapabilityNarrowing;
 	machine?: HerdrMachineReference;
+	/** Caller-mentioned Devin permission mode (from the runner config); wins over config.devinPermissionMode. */
+	devinPermissionMode?: DevinPermissionMode | undefined;
 }): ExternalCliRunnerStatus {
 	const codexExec = input.adapter === "codex-exec";
 	const codexExecWriter = input.adapter === "codex-exec-writer";
@@ -110,8 +114,8 @@ export function resolveExternalCliRunnerStatus(input: {
 		...(claudeCodeWriter ? { safety: { access: "workspace-write" as const, authentication: "existing-cli-required" as const, permissionMode: "acceptEdits" as const, tools: "Read,Write,Edit,Glob,Grep" as const, mcp: "empty-strict" as const, settingSources: "user" as const, userSettingsTrust: "required" as const, sessionPersistence: false as const } } : {}),
 		...(cursorAgent ? { safety: { access: "read-only" as const, authentication: "cursor-api-key-or-existing-login" as const, mode: "ask" as const, sandbox: "enabled" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
 		...(cursorAgentWriter ? { safety: { access: "workspace-write" as const, authentication: "cursor-api-key-or-existing-login" as const, mode: "print" as const, sandbox: "enabled" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
-		...(devin ? { safety: { access: "read-only" as const, authentication: "existing-cli-required" as const, permissionMode: "auto" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
-		...(devinWriter ? { safety: { access: "workspace-write" as const, authentication: "existing-cli-required" as const, permissionMode: "accept-edits" as const, workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
+		...(devin ? { safety: { access: "read-only" as const, authentication: "existing-cli-required" as const, permissionMode: resolveDevinPermissionMode({ permissionMode: input.devinPermissionMode, writer: false }), workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
+		...(devinWriter ? { safety: { access: "workspace-write" as const, authentication: "existing-cli-required" as const, permissionMode: resolveDevinPermissionMode({ permissionMode: input.devinPermissionMode, writer: true }), workspaceTrust: "existing-required" as const, sessionReuse: false as const } } : {}),
 		...(input.machine ? { machine: input.machine } : {}),
 		capabilities: {
 			stop: true,

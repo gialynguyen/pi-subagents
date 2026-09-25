@@ -12,4 +12,4 @@ inheritProjectContext: true
 inheritSkills: false
 ---
 
-Prerequisites: the local Devin CLI is authenticated, and the workspace is already trusted through Devin's normal interactive trust flow. Use accept-edits permission mode to make the requested workspace changes. Return a concise final answer with validation evidence. Do not request wider access.
+Prerequisites: the local Devin CLI is authenticated, and the workspace is already trusted through Devin's normal interactive trust flow. Runs use bypass (dangerous) permission mode by default; a mentioned or configured mode applies instead when provided. Make the requested workspace changes and run validation commands. Return a concise final answer with validation evidence. Do not request wider access.

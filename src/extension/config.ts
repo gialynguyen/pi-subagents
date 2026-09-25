@@ -165,6 +165,9 @@ function validateConfig(config: Record<string, unknown>): void {
 	if (config.resultScanLogging !== undefined && config.resultScanLogging !== "all" && config.resultScanLogging !== "activity" && config.resultScanLogging !== "off") {
 		throw new Error('config.resultScanLogging must be "all", "activity", or "off"');
 	}
+	if (config.devinPermissionMode !== undefined && config.devinPermissionMode !== "auto" && config.devinPermissionMode !== "accept-edits" && config.devinPermissionMode !== "smart" && config.devinPermissionMode !== "dangerous") {
+		throw new Error('config.devinPermissionMode must be "auto", "accept-edits", "smart", or "dangerous"');
+	}
 	validateMissionStoreConfig(config.missions);
 	validateAuthorityPolicy(config.authorityPolicy);
 	validatePermissionConfig(config.permissions);
@@ -220,7 +223,7 @@ export function loadConfig(): ExtensionConfig {
 		try {
 			const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
 			if (raw && typeof raw === "object" && !Array.isArray(raw)
-				&& (Object.hasOwn(raw, "worktreeProvider") || Object.hasOwn(raw, "worktreeBranchPrefix") || Object.hasOwn(raw, "modelResponseAliases") || Object.hasOwn(raw, "modelExclusions") || Object.hasOwn(raw, "checkpointBeforeDeadlineMs"))) throw error;
+				&& (Object.hasOwn(raw, "worktreeProvider") || Object.hasOwn(raw, "worktreeBranchPrefix") || Object.hasOwn(raw, "modelResponseAliases") || Object.hasOwn(raw, "modelExclusions") || Object.hasOwn(raw, "checkpointBeforeDeadlineMs") || Object.hasOwn(raw, "devinPermissionMode"))) throw error;
 		} catch (readError) {
 			if (readError === error) throw error;
 		}

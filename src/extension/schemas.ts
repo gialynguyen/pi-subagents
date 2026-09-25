@@ -362,6 +362,7 @@ const SubagentParamProperties = {
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias timeoutMs (same defaults)." })),
 	checkpointBeforeDeadlineMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Async single-agent runs only: the runner requests that the child checkpoint and stop this many ms before the run deadline (best-effort; the deadline kill still applies)." })),
 	toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-tool deadline (ms); fast builtins default 5m." })),
+	devinPermissionMode: Type.Optional(Type.String({ enum: ["auto", "accept-edits", "smart", "dangerous"], description: "Devin external-CLI permission mode for this run (the user-mentioned mode); wins over config.devinPermissionMode. Default: dangerous for devin-writer, auto for devin." })),
 	toolBudget: Type.Optional(ToolBudgetOverride),
 	usageBudget: Type.Optional(UsageBudgetOverride),
 	agentScope: Type.Optional(Type.String({ description: "user/project/both (default); project wins collisions." })),

@@ -383,6 +383,8 @@ export interface SubagentParamsLike {
 	checkpointBeforeDeadlineMs?: number;
 	/** Optional hard per-tool-call timeout (ms). Known-fast tools also have a default. */
 	toolTimeoutMs?: number;
+	/** Caller-mentioned Devin external-CLI permission mode for this run. */
+	devinPermissionMode?: "auto" | "accept-edits" | "smart" | "dangerous";
 	toolBudget?: ToolBudgetConfig;
 	usageBudget?: UsageBudgetConfig;
 	clarify?: boolean;
@@ -3542,6 +3544,7 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			usageBudget: data.usageBudget,
 			configToolBudget: data.configToolBudget,
 			toolTimeoutMs: data.params?.toolTimeoutMs,
+			...(data.params?.devinPermissionMode ? { devinPermissionMode: data.params.devinPermissionMode } : {}),
 			checkpointBeforeDeadlineMs: data.params?.checkpointBeforeDeadlineMs ?? deps.config.checkpointBeforeDeadlineMs,
 			configToolTimeoutMs: data.configToolTimeoutMs,
 			capabilityCeiling: data.capabilityCeiling,

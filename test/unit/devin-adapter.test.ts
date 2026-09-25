@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { discoverAgentsAll, resolveAgentName } from "../../src/agents/agents.ts";
 import { DEVIN_ADAPTER_ID, DEVIN_ENV_ALLOWLIST, DEVIN_WRITER_ADAPTER_ID, resolveDevinLaunch } from "../../src/runs/shared/devin-adapter.ts";
+import { getAgentDir } from "../../src/shared/utils.ts";
 import { externalCliReceiptMetadata, resolveExternalCliRunnerStatus } from "../../src/runs/shared/external-cli-contract.ts";
 import { clearExternalCliPreflightCacheForTests } from "../../src/runs/shared/external-cli-preflight.ts";
 import { runExternalCli } from "../../src/runs/shared/external-cli-runner.ts";
@@ -73,17 +74,34 @@ describe("Devin adapter", () => {
 		assert.equal(fs.existsSync(launch.temporaryDirectories[0]!), false);
 	});
 
-	it("owns explicit writer argv with accept-edits and no dangerous bypass", async () => {
+	it("owns explicit writer argv with bypass default and no yolo/bypass/trust flags", async () => {
 		const workspace = tempDir();
 		const stateDir = tempDir();
 		const { launch, result } = await runFake(workspace, stateDir, 1, "write the requested file", DEVIN_WRITER_ADAPTER_ID);
 		assert.deepEqual(launch.args.slice(1), [
-			"-p", "--prompt-file", launch.promptFilePath, "--permission-mode", "accept-edits",
+			"-p", "--prompt-file", launch.promptFilePath, "--permission-mode", "dangerous",
 		]);
-		assert.equal(launch.args.some((arg) => arg === "dangerous" || /--dangerous|--yolo|--bypass|--respect-workspace-trust/.test(arg)), false);
+		assert.equal(launch.args.some((arg) => /--yolo|--bypass|--respect-workspace-trust/.test(arg)), false);
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.output, "trusted final result");
 		assert.equal(fs.existsSync(launch.temporaryDirectories[0]!), false);
+	});
+
+	it("resolves permission mode: mention > config > bypass default", () => {
+		const stateDir = tempDir();
+		const configPath = path.join(getAgentDir(), "extensions", "subagent", "config.json");
+		try {
+			fs.mkdirSync(path.dirname(configPath), { recursive: true });
+			fs.writeFileSync(configPath, JSON.stringify({ devinPermissionMode: "smart" }));
+			assert.equal(resolveDevinLaunch({ adapter: DEVIN_WRITER_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 5 }).args.at(-1), "smart");
+			assert.equal(resolveDevinLaunch({ adapter: DEVIN_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 5 }).args.at(-1), "smart");
+			assert.equal(resolveDevinLaunch({ adapter: DEVIN_WRITER_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 5, permissionMode: "accept-edits" }).args.at(-1), "accept-edits");
+			fs.writeFileSync(configPath, JSON.stringify({ devinPermissionMode: "bogus" }));
+			assert.equal(resolveDevinLaunch({ adapter: DEVIN_WRITER_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 5 }).args.at(-1), "dangerous");
+			assert.equal(resolveDevinLaunch({ adapter: DEVIN_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 5 }).args.at(-1), "auto");
+		} finally {
+			fs.rmSync(configPath, { force: true });
+		}
 	});
 
 	it("fails closed on a non-zero exit and preserves stderr evidence", async () => {
@@ -98,7 +116,7 @@ describe("Devin adapter", () => {
 	it("rejects unsupported versions and incomplete help", () => {
 		const stateDir = tempDir();
 		const launch = resolveDevinLaunch({ adapter: DEVIN_ADAPTER_ID, command: "devin", asyncDir: stateDir, stepIndex: 3 });
-		const help = "--print --prompt-file --permission-mode accept-edits --respect-workspace-trust Print response and exit";
+		const help = "--print --prompt-file --permission-mode Modes: auto accept-edits smart dangerous --respect-workspace-trust Print response and exit";
 		const evidence = { binaryPath: "/tmp/devin", binaryMtimeMs: 1, version: "devin 3000.10.31 (b98cc431)", help, cacheHit: false };
 		assert.doesNotThrow(() => launch.preflight.validate?.(evidence));
 		assert.throws(() => launch.preflight.validate?.({ ...evidence, version: "devin unknown" }), /Unsupported Devin version response/);
@@ -125,7 +143,8 @@ describe("Devin adapter", () => {
 		assert.equal(read.promptDelivery, "prompt-file");
 		assert.equal(read.adapter.executionMode, "one-shot-prompt-file");
 		assert.deepEqual(externalCliReceiptMetadata({ runner: read }).safety, { access: "read-only", authentication: "existing-cli-required", permissionMode: "auto", workspaceTrust: "existing-required", sessionReuse: false });
-		assert.deepEqual(externalCliReceiptMetadata({ runner: writer }).safety, { access: "workspace-write", authentication: "existing-cli-required", permissionMode: "accept-edits", workspaceTrust: "existing-required", sessionReuse: false });
+		assert.deepEqual(externalCliReceiptMetadata({ runner: writer }).safety, { access: "workspace-write", authentication: "existing-cli-required", permissionMode: "dangerous", workspaceTrust: "existing-required", sessionReuse: false });
+		assert.deepEqual(externalCliReceiptMetadata({ runner: resolveExternalCliRunnerStatus({ adapter: "devin-writer", command: "devin", devinPermissionMode: "accept-edits" }) }).safety, { access: "workspace-write", authentication: "existing-cli-required", permissionMode: "accept-edits", workspaceTrust: "existing-required", sessionReuse: false });
 	});
 
 	it("keeps the read-only Devin selection reserved and discovers both built-ins", () => {
