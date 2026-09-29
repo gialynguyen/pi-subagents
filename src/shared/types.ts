@@ -12,6 +12,7 @@ import type { ModelScopeRule } from "../runs/shared/model-scope.ts";
 import type { ResolvedSubagentCapabilityCeiling, SubagentCapabilityAudit } from "../runs/shared/capability-ceiling.ts";
 import type { AuthorityPolicyConfig } from "../policy/authority.ts";
 import type { ThinkingLevel } from "./model-info.ts";
+import type { SubagentFeature } from "./disabled-features.ts";
 import type { GlobalMissionIndexRecord, MissionRecord, MissionStoreConfig } from "../missions/types.ts";
 import type { ExtensionBindings } from "../runs/shared/extension-bindings.ts";
 import type { WorkflowChildPermitContext } from "./workflow-child-permit.ts";
@@ -130,6 +131,8 @@ export interface WorkflowPreflight {
 }
 
 export type WorkflowReceiptState = "complete" | "failed" | "paused" | "stopped";
+
+export type WorkflowScriptFailureKind = "validation" | "script" | "child" | "return-serialization" | "timeout" | "detached-child" | "runtime";
 
 export type WorkflowTerminalResolution = "settled-awaiting-resume" | "failed-child" | "interrupted-child";
 
@@ -1514,8 +1517,15 @@ export interface Details {
 	mission?: MissionRecord;
 	workflow?: {
 		value?: unknown;
+		failureKind?: WorkflowScriptFailureKind;
 		args?: Record<string, unknown>;
 		argsDigest?: string;
+		/** SHA-256 of the workflow script source (async workflows). */
+		scriptDigest?: string;
+		/** Structured stop cause; set only when the owning extension runtime was replaced. */
+		stopCause?: "runtime-replaced";
+		/** Runtime-replaced workflow run whose finished children this run reused. */
+		reusedFrom?: string;
 		resource?: WorkflowResourceProvenance;
 		preflightWarnings?: string[];
 		trace: Array<{
@@ -1531,6 +1541,8 @@ export interface Details {
 			generatedLaneKey?: string;
 			warning?: string;
 			error?: string;
+			/** Came from a previous runtime-replaced run of the same script and args; this run launched nothing. */
+			reused?: boolean;
 		}>;
 		emits: unknown[];
 		console: Array<{ level: "log" | "info" | "warn" | "error"; text: string }>;
@@ -1910,6 +1922,8 @@ export interface AsyncStatus {
 	toolBudgetBlocked?: boolean;
 	usageBudget?: UsageBudgetState;
 	pid?: number;
+	/** Linux PID namespace identity used to scope liveness probes. */
+	pidNamespaceScope?: string;
 	cwd?: string;
 	/** Parent-resolved child session root retained for trusted restored transcript lookup. */
 	sessionRoot?: string;
@@ -1969,6 +1983,8 @@ export interface AsyncStatus {
 		outputName?: string;
 		structured?: boolean;
 		status: "pending" | "running" | "complete" | "completed" | "failed" | "partial" | "paused" | "stopped" | "rejected";
+		/** Workflow child result reused from a previous runtime-replaced run; the child was not re-run. */
+		reused?: boolean;
 		stopRequested?: boolean;
 		stopRequestedAt?: number;
 		children?: NestedRunSummary[];
@@ -2653,6 +2669,8 @@ export interface ExtensionConfig {
 	modelResponseAliases?: Record<string, string[]>;
 	/** Tool description variant registered for the parent-facing subagent tool. Defaults to split metadata. */
 	toolDescriptionMode?: ToolDescriptionMode;
+	/** Opt-in feature groups removed from the subagent tool schema and rejected at every execution boundary. */
+	disabledFeatures?: SubagentFeature[];
 	/** Inline chat rendering for the subagent tool. Defaults to rich. */
 	inlineToolDisplay?: InlineToolDisplay;
 	/** Density controls for the main chat subagent call/result renderer. */
