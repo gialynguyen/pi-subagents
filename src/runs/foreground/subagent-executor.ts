@@ -66,6 +66,7 @@ import { formatControlIntercomMessage, formatControlNoticeMessage, resolveContro
 import { formatSpawnBudget, getSpawnBudgetSnapshot, grantSpawnBudget, preflightSpawnBudget, preflightSpawnBudgetGrant, reserveSpawnBudget } from "../shared/spawn-budget.ts";
 import { claimRunFanoutBatch, claimRunFanoutBatchWithCommit, createRunFanoutBudget, formatRunFanoutBudget, getRunFanoutBudgetSnapshot, readRunFanoutBudgetDescriptor, RunFanoutLimitError, writeRunFanoutBudgetDescriptor } from "../shared/run-fanout-budget.ts";
 import { retainLiveForegroundNestedRoute } from "../../integrations/pi-web-session-liveness.ts";
+import { HERDR_FOREGROUND_CONTROL_CHANGED_EVENT } from "../../integrations/herdr-status.ts";
 import { validateToolBudgetConfig } from "../shared/tool-budget.ts";
 import { usageBudgetExceededMessage, usageBudgetState, validateUsageBudgetConfig } from "../shared/usage-budget.ts";
 import { assertAgentAllowedByCapabilityCeiling, intersectSubagentCapabilityCeilings, resolveCurrentSubagentCapabilityCeiling, type ResolvedSubagentCapabilityCeiling } from "../shared/capability-ceiling.ts";
@@ -105,7 +106,7 @@ import { attachRootChildrenToSteps, createNestedRoute, findNestedControlResult, 
 import type { ChildRuntimeConfig } from "../shared/child-runtime-config.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
-import { isStoppableAsyncStatusStep, resolveAsyncStatusChild, stopStoppableAsyncStatusChildren } from "../shared/child-identity.ts";
+import { isStoppableAsyncStatusStep, resolveAsyncStatusChild } from "../shared/child-identity.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { getExternalJobProvider } from "../../api/external-job-provider.ts";
 import { externalJobFollowUpRequestDigest, externalJobFollowUpRequestId, externalJobFollowUpRunId, externalJobPromptDigest, externalJobStableJson } from "../shared/external-job-runner.ts";
@@ -641,6 +642,11 @@ function trustedSessionRootsForStatus(ctx: ExtensionContext, deps: ExecutorDeps)
 	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 	if (parentSessionFile) roots.push(deps.getSubagentSessionRoot(parentSessionFile));
 	return [...new Set(roots)];
+}
+
+/** Children follow the launching session's trust; hosts older than Pi's trust concept keep Pi's default. */
+function sessionProjectTrust(ctx: ExtensionContext): boolean | undefined {
+	return typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : undefined;
 }
 
 function spawnBudgetErrorResult(message: string, mode: "single" | "parallel" | "chain"): AgentToolResult<Details> {
@@ -1811,6 +1817,7 @@ async function resumeExternalJobFollowUp(input: {
 			interactive: input.ctx.hasUI,
 			permissions: input.deps.config.permissions,
 			childRuntime: input.deps.childRuntime,
+			projectTrusted: sessionProjectTrust(input.ctx),
 		}),
 		cwd: input.effectiveCwd,
 		artifactsDir,
@@ -2081,6 +2088,7 @@ async function resumeAsyncRun(input: {
 				interactive: input.ctx.hasUI,
 		permissions: input.deps.config.permissions,
 		childRuntime: input.deps.childRuntime,
+		projectTrusted: sessionProjectTrust(input.ctx),
 			}),
 			availableModels,
 			cwd: effectiveCwd,
@@ -2210,6 +2218,7 @@ async function resumeAsyncRun(input: {
 			interactive: input.ctx.hasUI,
 		permissions: input.deps.config.permissions,
 		childRuntime: input.deps.childRuntime,
+		projectTrusted: sessionProjectTrust(input.ctx),
 		}),
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput ?? recoveryDescriptor?.maxOutput,
@@ -2310,6 +2319,7 @@ async function resumeAsyncRun(input: {
 			completed = await waitForImportedAsyncRoot({ runId: revivedId, asyncDir, resultPath, index: 0 }, {
 				shouldAbort: () => input.signal?.aborted === true,
 				timeoutMessage: "Workflow stopped before async child completed.",
+				abortedAsStopped: true,
 			});
 		} finally {
 			stopListener.remove();
@@ -3407,6 +3417,20 @@ function stopAwaitedAsyncChildOnAbort(signal: AbortSignal | undefined, state: Su
 	return { remove: () => signal?.removeEventListener("abort", stopOnAbort) };
 }
 
+// Live workflow controls are keyed by the full run id; a stop id may be a prefix or the launch tool-call id.
+function resolveLiveWorkflowRunId(deps: ExecutorDeps, id: string): string | undefined {
+	const controllers = deps.state.workflowControllers;
+	if (!controllers?.size) return undefined;
+	if (controllers.has(id)) return id;
+	try {
+		const resolved = resolveSubagentRunId(id, omitUndefinedProperties({ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) }));
+		return resolved?.kind === "async" && controllers.has(resolved.id) ? resolved.id : undefined;
+	} catch {
+		// The generic stop path resolves the id again and reports the error.
+		return undefined;
+	}
+}
+
 async function waitForWorkflowAsyncSingleResult(
 	params: SubagentParamsLike,
 	launchResult: AgentToolResult<Details>,
@@ -3421,6 +3445,7 @@ async function waitForWorkflowAsyncSingleResult(
 		completed = await waitForImportedAsyncRoot({ runId: options.runId, asyncDir, resultPath, index: 0 }, omitUndefinedProperties({
 			shouldAbort: () => options.signal?.aborted === true,
 			timeoutMessage: "Workflow stopped before async child completed.",
+			abortedAsStopped: true,
 		}));
 	} finally {
 		stopListener.remove();
@@ -3475,6 +3500,7 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		interactive: ctx.hasUI,
 		permissions: deps.config.permissions,
 		childRuntime: deps.childRuntime,
+		projectTrusted: sessionProjectTrust(ctx),
 	});
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth, deps.childRuntime);
@@ -4148,6 +4174,20 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	let detachForeground: ((reason?: string) => boolean) | undefined;
 	let childSessionControls: ForegroundChildSessionControls | undefined;
 	const foregroundControl = deps.state.foregroundControls.get(runId);
+	const syncHerdrForegroundChild = () => {
+		if (!foregroundControl?.parentWorkflowRunId) return;
+		try {
+			deps.pi.events.emit(HERDR_FOREGROUND_CONTROL_CHANGED_EVENT, { runId: foregroundControl.parentWorkflowRunId });
+		} catch (error) {
+			console.error("Failed to sync Herdr foreground child:", error);
+		}
+	};
+	const finishTrackedForegroundChild = () => {
+		if (!foregroundControl) return;
+		const wasActive = foregroundControl.activeChildren?.has(0) === true;
+		finishForegroundChild(foregroundControl, 0);
+		if (wasActive) syncHerdrForegroundChild();
+	};
 	if (foregroundControl) {
 		const thinking = resolveEffectiveThinking(modelOverride, thinkingOverrideForTask());
 		beginForegroundChild(foregroundControl, omitUndefinedProperties({
@@ -4183,6 +4223,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		}));
 		// Capture the owned mailbox before a child can start and finish between polling ticks.
 		if (deps.childRuntime?.fanoutChild) deps.activateSupervisorTransport?.();
+		syncHerdrForegroundChild();
 	}
 
 	const modelResponseAliases = deps.config.modelResponseAliases === undefined ? undefined : structuredClone(deps.config.modelResponseAliases);
@@ -4204,6 +4245,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		const launched = await runSync(ctx.cwd, agents, params.agent!, task, compactOptional<Parameters<typeof runSync>[4]>({
 			machine: foregroundMachine,
 			parentProviderRegistry: ctx.modelRegistry,
+			projectTrusted: sessionProjectTrust(ctx),
 			remoteReads: foregroundMachine ? readsOverride : undefined,
 			permissions: deps.config.permissions,
 			runtimeSnapshotHost: deps.pi,
@@ -4217,6 +4259,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			cwd: singleCwd,
 			requestedCwd: data.requestedCwd,
 			signal,
+			abortedAsStopped: params.workflowParentRunId !== undefined,
 			interruptSignal: interruptController.signal,
 			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: deps.pi.events,
@@ -4292,7 +4335,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 						if (!artifactConfig.enabled) cleanupStructuredOutputRuntime(structuredRuntime);
 					} finally {
 						try {
-							if (foregroundControl) finishForegroundChild(foregroundControl, 0);
+							finishTrackedForegroundChild();
 						} finally {
 							removeForegroundControlIfIdle(deps.state, runId, deps.trackRetainedNestedRoute);
 						}
@@ -4319,7 +4362,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		// authoritative completion remains live.
 		if (!r?.detached) {
 			if (!artifactConfig.enabled) cleanupStructuredOutputRuntime(structuredRuntime);
-			if (foregroundControl) finishForegroundChild(foregroundControl, 0);
+			finishTrackedForegroundChild();
 		}
 	}
 	if (!r.detached) {
@@ -4527,16 +4570,19 @@ function workflowChildResult(
 		? result.details.results[0].finalOutput
 		: receiptOutput;
 	const childError = result.details.results.map((child) => child.error).find((error): error is string => Boolean(error));
-	const failureErrorBase = childError && receiptOutput
-		? receiptOutput.includes(childError) ? receiptOutput : `${childError}\n\n${receiptOutput}`
-		: childError || receiptOutput || output || "Child run failed.";
+	const stopped = result.details.results.some((child) => child.stopped);
+	// A stopped child's receipt text carries the run fan-out annotation; report the structured stop reason instead.
+	const failureErrorBase = stopped && childError
+		? childError
+		: childError && receiptOutput
+			? receiptOutput.includes(childError) ? receiptOutput : `${childError}\n\n${receiptOutput}`
+			: childError || receiptOutput || output || "Child run failed.";
 	const savedOutputEvidence = [...new Set(result.details.results.map((child) => child.savedOutputPath).filter((value): value is string => Boolean(value)))]
 		.filter((savedOutputPath) => !failureErrorBase.includes(savedOutputPath))
 		.map((savedOutputPath) => `Saved output: ${savedOutputPath}`);
 	const failureError = [failureErrorBase, ...savedOutputEvidence].join("\n");
 	const detached = result.details.results.some((child) => child.detached);
 	const interrupted = result.details.results.some((child) => child.interrupted);
-	const stopped = result.details.results.some((child) => child.stopped);
 	const terminalOutcome = forcedTerminalOutcome
 		?? (result.details.results.some((child) => child.timedOut)
 			? { state: "partial" as const, reason: "timeout" as const }
@@ -7062,47 +7108,40 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 			if (action === "stop") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
-				const workflowController = targetRunId ? deps.state.workflowControllers?.get(targetRunId) : undefined;
-				if (workflowController && targetRunId) {
-					const stopChild = deps.state.workflowChildStops?.get(targetRunId);
-					if (paramsWithResolvedCwd.childId !== undefined) {
-						const workflowRunId = targetRunId;
-						const asyncJob = deps.state.asyncJobs.get(workflowRunId);
-						if (!asyncJob?.asyncDir) return { content: [{ type: "text", text: `Status file not found for async workflow '${workflowRunId}'.` }], isError: true, details: { mode: "management", results: [] } };
-						const status = readStatus(asyncJob.asyncDir);
-						if (!status) return { content: [{ type: "text", text: `Status file not found for async workflow '${workflowRunId}'.` }], isError: true, details: { mode: "management", results: [] } };
-						const resolution = resolveAsyncStatusChild(status, paramsWithResolvedCwd.childId);
-						if (!resolution.ok) return { content: [{ type: "text", text: resolution.message }], isError: true, details: { mode: "management", results: [] } };
-						if (!isStoppableAsyncStatusStep(resolution.child.step)) return { content: [{ type: "text", text: `Child '${paramsWithResolvedCwd.childId}' in async run '${targetRunId}' is ${resolution.child.step.status}; stop only supports pending or running children.` }], isError: true, details: { mode: "management", results: [] } };
-						if (!stopChild) return { content: [{ type: "text", text: `Workflow ${targetRunId} child stop is unavailable in this extension runtime.` }], isError: true, details: { mode: "management", results: [] } };
-						if (!stopChild(resolution.child.id, `Workflow child '${resolution.child.id}' stopped.`)) return { content: [{ type: "text", text: `Child '${paramsWithResolvedCwd.childId}' in workflow ${workflowRunId} is not available to stop.` }], isError: true, details: { mode: "management", results: [] } };
-						try {
-							fs.appendFileSync(path.join(asyncJob.asyncDir, "events.jsonl"), `${JSON.stringify({
-								type: "subagent.child-status",
-								version: 1,
-								runId: workflowRunId,
-								childId: resolution.child.id,
-								status: "stopping",
-								ts: Date.now(),
-								reason: "subagent-action",
-								source: "async",
-								stepIndex: resolution.child.index,
-								agent: resolution.child.step.agent,
-								...(resolution.child.step.runId ? { childRunId: resolution.child.step.runId } : {}),
-								...(resolution.child.step.workflowKey ? { workflowKey: resolution.child.step.workflowKey } : {}),
-								...(resolution.child.step.phase ? { phase: resolution.child.step.phase } : {}),
-								...(resolution.child.step.label ? { label: resolution.child.step.label } : {}),
-							} satisfies SubagentChildStatusEvent)}\n`, "utf-8");
-						} catch (error) {
-							console.error(`Failed to append child status event for workflow ${workflowRunId}:`, error);
-						}
-						return { content: [{ type: "text", text: `Stop requested for child ${resolution.child.id} in async workflow ${workflowRunId}.` }], details: { mode: "management", results: [] } };
+				// Whole-workflow stops reach stopAsyncRun below, which stops a live workflow in-process.
+				const workflowRunId = targetRunId && paramsWithResolvedCwd.childId !== undefined ? resolveLiveWorkflowRunId(deps, targetRunId) : undefined;
+				if (workflowRunId && paramsWithResolvedCwd.childId !== undefined) {
+					const stopChild = deps.state.workflowChildStops?.get(workflowRunId);
+					const asyncJob = deps.state.asyncJobs.get(workflowRunId);
+					if (!asyncJob?.asyncDir) return { content: [{ type: "text", text: `Status file not found for async workflow '${workflowRunId}'.` }], isError: true, details: { mode: "management", results: [] } };
+					const status = readStatus(asyncJob.asyncDir);
+					if (!status) return { content: [{ type: "text", text: `Status file not found for async workflow '${workflowRunId}'.` }], isError: true, details: { mode: "management", results: [] } };
+					const resolution = resolveAsyncStatusChild(status, paramsWithResolvedCwd.childId);
+					if (!resolution.ok) return { content: [{ type: "text", text: resolution.message }], isError: true, details: { mode: "management", results: [] } };
+					if (!isStoppableAsyncStatusStep(resolution.child.step)) return { content: [{ type: "text", text: `Child '${paramsWithResolvedCwd.childId}' in async run '${workflowRunId}' is ${resolution.child.step.status}; stop only supports pending or running children.` }], isError: true, details: { mode: "management", results: [] } };
+					if (!stopChild) return { content: [{ type: "text", text: `Workflow ${workflowRunId} child stop is unavailable in this extension runtime.` }], isError: true, details: { mode: "management", results: [] } };
+					if (!stopChild(resolution.child.id, `Workflow child '${resolution.child.id}' stopped.`)) return { content: [{ type: "text", text: `Child '${paramsWithResolvedCwd.childId}' in workflow ${workflowRunId} is not available to stop.` }], isError: true, details: { mode: "management", results: [] } };
+					try {
+						fs.appendFileSync(path.join(asyncJob.asyncDir, "events.jsonl"), `${JSON.stringify({
+							type: "subagent.child-status",
+							version: 1,
+							runId: workflowRunId,
+							childId: resolution.child.id,
+							status: "stopping",
+							ts: Date.now(),
+							reason: "subagent-action",
+							source: "async",
+							stepIndex: resolution.child.index,
+							agent: resolution.child.step.agent,
+							...(resolution.child.step.runId ? { childRunId: resolution.child.step.runId } : {}),
+							...(resolution.child.step.workflowKey ? { workflowKey: resolution.child.step.workflowKey } : {}),
+							...(resolution.child.step.phase ? { phase: resolution.child.step.phase } : {}),
+							...(resolution.child.step.label ? { label: resolution.child.step.label } : {}),
+						} satisfies SubagentChildStatusEvent)}\n`, "utf-8");
+					} catch (error) {
+						console.error(`Failed to append child status event for workflow ${workflowRunId}:`, error);
 					}
-					const asyncJob = deps.state.asyncJobs.get(targetRunId);
-					const status = asyncJob?.asyncDir ? readStatus(asyncJob.asyncDir) : undefined;
-					if (status) stopStoppableAsyncStatusChildren(status, stopChild, "Workflow stopped.");
-					workflowController.abort(new Error("Workflow stopped."));
-					return { content: [{ type: "text", text: `Stop requested for async workflow ${targetRunId}.` }], details: { mode: "management", results: [] } };
+					return { content: [{ type: "text", text: `Stop requested for child ${resolution.child.id} in async workflow ${workflowRunId}.` }], details: { mode: "management", results: [] } };
 				}
 				let resolved: ResolvedSubagentRunId | undefined;
 				if (paramsWithResolvedCwd.dir) {

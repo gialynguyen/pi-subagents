@@ -112,6 +112,21 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.doesNotMatch(text, /Provide exactly one mode/);
 	});
 
+	it("reports foreground workflow siblings stopped by a failed script as stopped", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ matchArgIncludes: "Slow sibling", hangUntilAbort: true });
+		mockPi.onCall({ matchArgIncludes: "Fails at launch", createError: "launch failed" });
+		const sent: Array<{ customType?: string; content?: string }> = [];
+		const executor = makeExecutor([makeAgent("echo")], {}, false, undefined, true, new Map(), undefined, undefined, createEventBus(), undefined, undefined, (message: unknown) => sent.push(message as { customType?: string; content?: string }));
+		const launch = await executor.execute("workflow-foreground-sibling-stop", {
+			async: true,
+			workflowScript: `await Promise.all([runs.run("a", { agent: "echo", task: "Slow sibling" }), runs.run("b", { agent: "echo", task: "Fails at launch" })]);`,
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(launch.isError, undefined, launch.content[0]?.text ?? "workflow launch failed");
+		const notice = () => sent.find((message) => message.customType === "subagent-incremental-child-notify" && message.content?.includes("**a**"));
+		for (let attempt = 0; attempt < 250 && !notice(); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.match(notice()?.content ?? "", /^Workflow child stopped: \*\*a\*\*\n[\s\S]*\nError: Subagent stopped before completion\.\nStatus: workflow finished$/);
+	});
+
 	it("emits successful async workflow child settlements without provider turns", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ matchArgIncludes: "Child A", output: "A done" });
 		mockPi.onCall({ matchArgIncludes: "Child B", output: "B done" });
@@ -138,6 +153,21 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			["Workflow child completed: **a**", "Workflow child completed: **b**"],
 		);
 		assert.ok(childMessages().every(({ options }) => options?.triggerTurn === false));
+	});
+
+	it("reports async workflow siblings stopped by a failed script as stopped", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ matchArgIncludes: "Slow sibling", hangUntilAbort: true });
+		mockPi.onCall({ matchArgIncludes: "Fails at launch", createError: "launch failed" });
+		const sent: Array<{ customType?: string; content?: string }> = [];
+		const executor = makeExecutor([makeAgent("echo")], {}, true, undefined, true, new Map(), undefined, undefined, createEventBus(), undefined, undefined, (message: unknown) => sent.push(message as { customType?: string; content?: string }));
+		const launch = await executor.execute("workflow-sibling-stop", {
+			async: true,
+			workflowScript: `await Promise.all([runs.run("a", { agent: "echo", task: "Slow sibling" }), runs.run("b", { agent: "echo", task: "Fails at launch" })]);`,
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(launch.isError, undefined, launch.content[0]?.text ?? "workflow launch failed");
+		const notice = () => sent.find((message) => message.customType === "subagent-incremental-child-notify" && message.content?.includes("**a**"));
+		for (let attempt = 0; attempt < 250 && !notice(); attempt++) await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.match(notice()?.content ?? "", /^Workflow child stopped: \*\*a\*\*\n[\s\S]*\nError: Workflow stopped before async child completed\.\nStatus: workflow finished$/);
 	});
 
 	it("spawns agent and captures output", async () => {
@@ -1774,7 +1804,12 @@ Answer only from the supplied synthetic text.
 				workflowControllers.get(runId)!.abort(reason);
 				return await settled(runId);
 			};
-			return { launch, waitFor, settled, stopWhenStage2Starts };
+			const stopAction = (target: { id: string } | { dir: string }, sessionId?: string) => {
+				const ctx = makeMinimalCtx(tempDir);
+				if (sessionId) ctx.sessionManager.getSessionId = () => sessionId;
+				return executor.execute(`workflow-stop-${Date.now()}`, { action: "stop", ...target }, new AbortController().signal, undefined, ctx);
+			};
+			return { launch, waitFor, settled, stopWhenStage2Starts, stopAction };
 		};
 		const resultFileText = (runId: string) => fs.readFileSync(path.join(DIRS.results, `${runId}.json`), "utf-8");
 
@@ -1918,6 +1953,35 @@ Answer only from the supplied synthetic text.
 			assert.ok(stage2RunId);
 			const child = await waitForAsyncState(stage2RunId, (status) => terminalStates.includes(status.state ?? ""), 30_000);
 			assert.equal(child.state, "stopped");
+		});
+
+		it("stops the workflow and its async and foreground children when the stop action names it by id prefix or dir", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+			const { launch, waitFor, settled, stopAction } = setup();
+			for (const form of ["prefix", "dir"] as const) {
+				const nonce = `stop-action-${form}-${Date.now()}`;
+				mockPi.onCall({ matchArgIncludes: `Async child ${nonce}`, waitForPath: path.join(tempDir, `${nonce}.never`), output: "never" });
+				mockPi.onCall({ matchArgIncludes: `Foreground child ${nonce}`, hangUntilAbort: true });
+				const runId = await launch({ workflowScript: `await Promise.all([runs.run("bg", { agent: "bg", task: "Async child ${nonce}" }), runs.run("fg", { agent: "echo", task: "Foreground child ${nonce}" })]);` });
+				const running = await waitFor(runId, (status) => Boolean(status.steps?.find((step) => step.workflowKey === "bg" && step.async === true)?.runId)
+					&& status.steps?.find((step) => step.workflowKey === "fg")?.status === "running");
+				const bgRunId = running.steps?.find((step) => step.workflowKey === "bg")?.runId;
+				assert.ok(bgRunId);
+
+				const target = form === "prefix" ? { id: runId.slice(0, 8) } : { dir: path.join(DIRS.async, runId) };
+				const foreign = await stopAction(target, "other-session");
+				assert.equal(foreign.isError, true, `${form}: another session cannot stop the workflow`);
+				assert.equal(readStatusFile(runId).state, "running", form);
+				const result = await stopAction(target);
+				assert.equal(result.isError, undefined, result.content[0]?.text);
+				assert.equal(result.content[0]?.text, `Stop requested for async workflow ${runId}.`, form);
+				const stopped = await settled(runId);
+				assert.equal(stopped.state, "stopped", form);
+				assert.equal(stopped.steps?.find((step) => step.workflowKey === "fg")?.status, "stopped", form);
+				assert.doesNotMatch(resultFileText(runId), /relaunch the same workflowScript/, form);
+				assert.equal((await waitForAsyncState(bgRunId, (status) => terminalStates.includes(status.state ?? ""), 30_000)).state, "stopped", form);
+				const workflowStopRequests = path.join(DIRS.async, runId, "control", "stop-requests");
+				assert.deepEqual(fs.existsSync(workflowStopRequests) ? fs.readdirSync(workflowStopRequests) : [], [], `${form}: no unread stop request is left for the in-process workflow`);
+			}
 		});
 
 		it("stops a re-attached child when the user stops the relaunched workflow", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
@@ -2614,7 +2678,8 @@ Answer only from the supplied synthetic text.
 			assert.equal(result.details.asyncDir, childDir);
 			assert.equal(result.details.results.length, 1);
 			assert.equal(result.details.results[0]?.exitCode, 1);
-			assert.equal(result.details.results[0]?.timedOut, true);
+			assert.equal(result.details.results[0]?.stopped, true);
+			assert.equal(result.details.results[0]?.timedOut, undefined);
 			assert.equal(result.details.results[0]?.error, "Workflow stopped before async child completed.");
 			assert.equal(result.details.results[0]?.finalOutput, "Workflow stopped before async child completed.");
 			assert.doesNotMatch(result.content[0]?.text ?? "", /recoverable publication—not imported/);

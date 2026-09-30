@@ -189,6 +189,8 @@ export interface SubagentRunConfig {
 	childSessionFactoryModule?: string;
 	/** The launching executor's own child runtime when it was itself an in-process child. */
 	inheritedChildRuntime?: InheritedChildRuntime;
+	/** The launching session's project trust; undefined keeps Pi's default for hosts without trust. */
+	projectTrusted?: boolean;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	worktreeBaseDir?: string;
@@ -670,6 +672,7 @@ interface SingleStepContext {
 	childSessions: ChildSessionFactory;
 	/** The launching executor's own child runtime; nested route, depth, and ceilings come from here. */
 	inheritedChildRuntime?: InheritedChildRuntime;
+	projectTrusted?: boolean;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	registerTimeout?: (interrupt: (() => void) | undefined) => void;
 	registerStop?: (stop: (() => void) | undefined) => void;
@@ -816,6 +819,7 @@ export async function runSingleStepInner(
 			fast: step.fast,
 			model: step.model,
 			mcpDirectTools: step.mcpDirectTools,
+			builtinMcpTools: step.builtinMcpTools,
 			cwd: step.cwd ?? ctx.cwd,
 			requireReadTool: Boolean(step.skills?.length),
 			structuredOutput: Boolean(effectiveStructuredOutput),
@@ -1152,6 +1156,7 @@ export async function runSingleStepInner(
 				fast: step.fast,
 				model: step.model,
 				mcpDirectTools: step.mcpDirectTools,
+				builtinMcpTools: step.builtinMcpTools,
 				cwd: step.cwd ?? ctx.cwd,
 				requireReadTool: Boolean(step.skills?.length),
 				structuredOutput: Boolean(effectiveStructuredOutput),
@@ -3720,6 +3725,7 @@ export async function runSubagent(
 					artifactsDir, artifactConfig, id,
 					flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
 					outputFile: path.join(asyncDir, `output-${fi}.log`),
+					projectTrusted: config.projectTrusted,
 					piPackageRoot: config.piPackageRoot,
 					childSessions,
 					inheritedChildRuntime: config.inheritedChildRuntime,
@@ -4132,6 +4138,7 @@ export async function runSubagent(
 							sessionDir: taskSessionDir,
 							artifactsDir, artifactConfig, id,
 							flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
+							projectTrusted: config.projectTrusted,
 							outputFile: path.join(asyncDir, `output-${fi}.log`),
 							piPackageRoot: config.piPackageRoot,
 							childSessions,
@@ -4520,6 +4527,7 @@ export async function runSubagent(
 				outputs: statusPayload.mode === "single" ? undefined : outputs,
 				sessionDir: config.sessionDir,
 				artifactsDir, artifactConfig, id,
+				projectTrusted: config.projectTrusted,
 				flatIndex, flatStepCount: Math.max(statusPayload.steps.length, 1),
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 				piPackageRoot: config.piPackageRoot,
