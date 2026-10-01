@@ -2457,6 +2457,8 @@ export interface RunSyncOptions {
 	childSessionFactory?: import("../runs/shared/child-session.ts").ChildSessionFactory;
 	/** Invoking parent registry inherited only by its local foreground launch. */
 	parentProviderRegistry?: import("../runs/shared/child-session.ts").ParentProviderRegistry;
+	/** The invoking session's project trust; undefined when the host has no trust concept. */
+	projectTrusted?: boolean;
 	/** The launching executor's own child runtime when it is itself an in-process child. */
 	childRuntime?: import("../runs/shared/child-runtime-config.ts").ChildRuntimeConfig;
 	/** Fires once the child session exists and can be steered. */
@@ -2475,6 +2477,8 @@ export interface RunSyncOptions {
 	/** Original cwd input retained for launch diagnostics. */
 	requestedCwd?: string;
 	signal?: AbortSignal;
+	/** Report a child ended by `signal` as stopped; set for workflow children, whose signal is the workflow's. */
+	abortedAsStopped?: boolean;
 	interruptSignal?: AbortSignal;
 	timeoutMs?: number;
 	deadlineAt?: number;
@@ -2594,6 +2598,7 @@ export interface ProactiveSkillSubagentsConfig {
 }
 
 export type ToolDescriptionMode = "full" | "compact" | "custom";
+export type ToolActivationMode = "auto" | "dynamic" | "eager";
 export type InlineToolDisplay = "rich" | "summary";
 
 export interface ScheduledRunsConfig {
@@ -2669,6 +2674,8 @@ export interface ExtensionConfig {
 	modelResponseAliases?: Record<string, string[]>;
 	/** Tool description variant registered for the parent-facing subagent tool. Defaults to split metadata. */
 	toolDescriptionMode?: ToolDescriptionMode;
+	/** How a new parent session offers the subagent tool. Defaults to auto. */
+	toolActivation?: ToolActivationMode;
 	/** Opt-in feature groups removed from the subagent tool schema and rejected at every execution boundary. */
 	disabledFeatures?: SubagentFeature[];
 	/** Inline chat rendering for the subagent tool. Defaults to rich. */

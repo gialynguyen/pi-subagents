@@ -408,6 +408,7 @@ async function runSingleAttempt(
 		mcpDirectTools: agent.mcpDirectTools,
 		cwd: options.cwd ?? runtimeCwd,
 		intercomSessionName: options.intercomSessionName,
+		projectTrusted: options.projectTrusted,
 		sessionName: childSessionName,
 		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 		runId: options.runId,
@@ -1315,6 +1316,8 @@ async function runSingleAttempt(
 			if (!closeError && (abortedBySignal || session?.shutDown) && !result.interrupted && !result.timedOut) {
 				closeError = session?.shutDown ? "Subagent stopped because the parent session shut down." : STOPPED_BEFORE_COMPLETION_ERROR;
 			}
+			// A workflow child ended by the workflow's abort signal was stopped, not failed.
+			if (options.abortedAsStopped && abortedBySignal && !session?.shutDown && !result.interrupted && !result.timedOut) result.stopped = true;
 			if (!closeError && forced && !forcedDrainAfterFinalSuccess) {
 				closeError = "Subagent session did not settle after it was aborted.";
 			}
