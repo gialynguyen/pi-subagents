@@ -71,7 +71,7 @@ The complete plain-JSON inventory is validated before the first launch (maximum 
 |-------|------|---------|-------------|
 | `agent` | string | - | One direct child or agent-management target. Workflow child agents are set inside `runs.run` or `runs.all`. |
 | `task` | string | agent default | Direct child's task; requires `agent`, excludes `action` and workflow inputs. `agent` may also select a management target. |
-| `action` | string | - | Offline workflow `validate`, agent management (including `guide`, `children.list`, and `refine`/`refine.show`/`refine.rollback`), lane evidence (`lane.status`, `lane.recordMerge`, `lane.recordSupersession`), mission (`mission.create/list/show/update/resolve-decision/attach-run/close`), Inspect actions (`inspector.command/open/status/close`), Herdr project pane (`project.open/status/close`), status/control, plan-only `worktree.cleanup`, schedule, watchdog, or doctor action. |
+| `action` | string | - | Offline workflow `validate`, agent management (including `guide`, `children.list`, and `refine`/`refine.show`/`refine.rollback`), lane evidence (`lane.status`, `lane.recordMerge`, `lane.recordSupersession`), mission (`mission.create/list/show/update/resolve-decision/attach-run/close`), Inspect actions (`inspector.command/open/status/close`), Herdr project pane (`project.open/status/close`), status/control, reviewed `worktree.cleanup`, schedule, watchdog, or doctor action. |
 | `topic` | `overview \| workflows \| agents \| missions \| observability \| tool-reference \| configuration \| models \| watchdog \| extension-api \| council` | `overview` | Packaged guide topic for `action: "guide"`. |
 | `config` | object/string | - | Agent config for management create/update. |
 | `context` | `fresh \| fork \| profile` | global or per-agent default, else `fresh` | Explicit `fresh` or `fork` overrides every workflow child. `profile` requires the selected agent's declared `defaultContext` and ignores config `defaultSubagentContext`; missing agent defaults fail. When omitted, [`defaultSubagentContext`](configuration.md#defaultsubagentcontext) wins over each agent's `defaultContext`; implicit fork falls back to fresh without a persisted parent session and leaf. Explicit fork is strict. Packaged `worker` defaults to `fresh`; packaged `oracle` and `advisor` default to `fork`. |
@@ -79,9 +79,9 @@ The complete plain-JSON inventory is validated before the first launch (maximum 
 | `missionId` | string | - | Attach a workflow, including each fire of `schedule.create`, to an existing project mission. Scheduled attachment uses ordinary lifecycle and retention rules. |
 | `mission` | object/false | auto-create | Override the default enclosing mission with `{ title \| summary, objective?, goal?, budget?, labels? }`. Set exactly one non-empty `title` or `summary`; `objective` and `labels` are optional. `goal` may only be `true`, requires `budget.tokens`, and enables continuation notices. Pass `false` for an intentionally ephemeral workflow with no mission for it or its children and no `state` global. Explicit mission persistence failures are strict. |
 | `handoffPath` | string | - | Aggregate handoff manifest for `action: "worktree.discard"` or lane evidence actions, or optional explicit metadata for `action: "worktree.cleanup"`. |
-| `repo` | string | runtime cwd | Repository path for `action: "worktree.cleanup"`; plan mode only. The configured worktree base filters candidates by their per-project folder under it but never discovers them. |
-| `planId` | string | - | Reserved for a future `worktree.cleanup` apply action; rejected by the current plan-only action. |
-| `mode` | `steer \| follow_up \| auto \| plan \| apply` | - | Delivery mode for `action: "steer"`; `worktree.cleanup` currently accepts `plan` only. Apply/removal is reserved for a later change. |
+| `repo` | string | runtime cwd | Repository path for `action: "worktree.cleanup"`; required explicitly for apply. The configured worktree base filters candidates by their per-project folder under it but never discovers them. |
+| `planId` | string | - | Saved, reviewed cleanup plan ID; required for apply, rejected in plan mode. |
+| `mode` | `steer \| follow_up \| auto \| plan \| apply` | - | Delivery mode for `action: "steer"`; `worktree.cleanup` accepts `plan` or `apply`; apply requires an explicit repository and saved plan ID. |
 | `laneId` | string | - | Exact `runId` stored in the handoff manifest for `lane.status`, `lane.recordMerge`, or `lane.recordSupersession`. |
 | `merge` | object | - | Attested merge evidence for `lane.recordMerge`; requires a positive PR number, full reviewed/merge SHAs, tree-equivalence and post-merge-check statuses, attestor, and timestamp. |
 | `supersession` | object | - | Attested replacement-lane evidence for `lane.recordSupersession`; requires a different replacement lane id, attestor, and timestamp. |
@@ -150,7 +150,7 @@ return { first: first.key, rest: rest.map((child) => child.key), receipt };
 
 Use `outputMode: "file-only"` when a saved output may be large and the parent only needs a pointer. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Failed runs and save errors still return normal inline output for debugging.
 
-In a workflow script, give each child an explicit output path when later script steps need a durable file reference. A child with only read-only tools does not need direct filesystem access for `output`: it returns the complete artifact in its final response and the runtime persists it. Children with mutation-capable tools retain the direct-write instruction.
+In a workflow script, give each child an explicit output path when later script steps need a durable file reference. A child with only read-only tools does not need direct filesystem access for `output`: it returns the complete artifact in its final response and the runtime persists it. Children with mutation-capable tools retain the direct-write instruction. With `outputSchema`, the runtime persists the structured result as indented JSON instead of the final prose, unless the child wrote the file itself.
 
 The `output` field is the API binding; a filename mentioned in task text (for example, `Write your findings to exactly this path: report.md`) is only instruction and does not override runtime routing. When a later workflow step or parent needs a durable file, set `output` on `runs.run`/`runs.all` and return the child’s `outputReference`, `outputPathMapping`, or `artifactPaths`; arbitrary literal strings returned by workflow JavaScript are not rewritten. Omitted child output may use a managed aggregate-derived sibling path.
 
@@ -246,7 +246,7 @@ Rules:
 
 ### Schedule controls
 
-Use `schedule.create` with `workflow: true` or a script path, not a direct child. `at` accepts a delay like `+10m` or an ISO timestamp with timezone; `every` accepts fixed intervals. `sessionOnly:true` binds restoration/execution to the creating session file; omitted/false is project-wide. Recurring `quiet:true` keeps successful automatic fires visible without a parent turn; failed, stopped or paused runs still wake the parent. One-shot `at` and manual `schedule.run` stay noisy unless that launch passes `quiet:true`. An optional `missionId` attaches an existing mission on every fire and exposes its workflow state, using ordinary mission lifecycle and retention rules; `mission.close` does not pause the schedule. See [missions and schedules](missions.md#schedules) for examples and list/show/history/pause/resume/run/run-due/delete. Calendar selectors (`on`, `timezone`) are deferred. `baseRef` resolves only at worktree allocation and still requires a clean source checkout.
+Use `schedule.create` with `workflow: true` or a script path, not a direct child. `at` accepts a delay like `+10m` or an ISO timestamp with timezone; `every` accepts fixed intervals or `day`/`week` with `at:"HH:mm"` and an explicit IANA `timezone` (or `UTC`). Weekly `on` is a non-empty array of `mon`–`sun`; daily schedules omit it. Missing local times are skipped; repeated times fire once at their first instant. `sessionOnly:true` binds restoration/execution to the creating session file; omitted/false is project-wide. Recurring `quiet:true` keeps successful automatic fires visible without a parent turn; failed, stopped or paused runs still wake the parent. One-shot `at` and manual `schedule.run` stay noisy unless that launch passes `quiet:true`. An optional `missionId` attaches an existing mission on every fire and exposes its workflow state, using ordinary mission lifecycle and retention rules; `mission.close` does not pause the schedule. See [missions and schedules](missions.md#schedules) for examples and list/show/history/pause/resume/run/run-due/delete. `baseRef` resolves only at worktree allocation and still requires a clean source checkout.
 
 ## Lane merge evidence and cleanup eligibility
 
@@ -319,6 +319,31 @@ subagent({ action: "doctor" })
 - Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands.
 - Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs.
 - Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
+
+### Command controls
+
+Command controls target direct local native Pi children that explicitly select both `bash` and `subagent_command`, in foreground or async runs. They require the owning parent session, a run `id`, an explicit `index` for multi-child runs, and the exact `toolCallId` for mutations. Nested, external, and custom shell backends do not expose this controller. Custom bash extensions keep their own registered `subagent_command` tool. If a custom bash backend does not provide that tool, an explicitly required `subagent_command` remains available and reports an unsupported-backend error. Native supervisor command controls are unavailable for custom backends.
+
+```ts
+subagent({ action: "command.status", id: "<run-id>", index: 0 })
+subagent({ action: "command.yield", id: "<run-id>", index: 0, toolCallId: "<call-id>" })
+subagent({ action: "command.cancel", id: "<run-id>", index: 0, toolCallId: "<call-id>" })
+subagent({ action: "command.status", id: "<run-id>", index: 0, toolCallId: "<call-id>" })
+```
+
+`command.yield` releases the selected blocking tool call without restarting the process. `command.cancel` aborts only that command through Pi's native bash cancellation; the child receives a tool error and can continue. `cancel_requested` acknowledges the request, while `cancelled` confirms the backend settled. A stale id never targets a later command. Run-scoped `interrupt` remains separate.
+
+Enable command controls by including both `bash` and `subagent_command` in the agent or call's `tools` allowlist. Tool ceilings and `excludeTools` still apply. Without this explicit selection, bash keeps its original tool schema and backend; no command controller, inbox watcher, or command-state writes are added. Inside an enabled child:
+
+```ts
+bash({ command: "npm run dev", yieldTimeMs: 1000 })
+subagent_command({ action: "status", toolCallId: "<returned-call-id>", waitMs: 1000 })
+subagent_command({ action: "cancel", toolCallId: "<returned-call-id>", waitMs: 1000 })
+```
+
+`yieldTimeMs` and `waitMs` range from 0 to 30,000 milliseconds. Omitting `yieldTimeMs` preserves completion-waiting behavior. Yielded handles are not successful exits. Status includes running/yielded/cancel-requested states and completed/failed/cancelled terminal states, a bounded output tail, and Pi's full-output file path when available. Recent terminal history retains 20 commands; active commands remain tracked.
+
+Commands remain owned by the child session. Normal completion with unfinished commands cancels them and fails the run. Interrupt, stop, timeout, and disposal clean up owned commands. Controls do not transfer processes out of the child or create detached services. Native bash `timeout` remains command-scoped; `toolTimeoutMs` covers an open tool call and does not become a yielded process deadline.
 
 ### resume
 
@@ -498,3 +523,18 @@ subagent({ workflow: true, share: true });
 ```
 
 This is disabled by default. Session data may contain source code, paths, environment variables, credentials, or other sensitive output. You need `gh` installed and authenticated.
+
+### Reviewed worktree cleanup
+
+`worktree.cleanup` first saves a plan without removing anything:
+
+```ts
+subagent({ action: "worktree.cleanup", repo: "/path/to/repo", mode: "plan" })
+subagent({ action: "worktree.cleanup", repo: "/path/to/repo", mode: "apply", planId: "<reviewed-plan-id>" })
+```
+
+Apply uses the existing `authorityPolicy.discardWorktree` (`confirm` by default). It checks the saved plan's repository, hash and 30-minute expiry, then rechecks only reviewed candidates under a repository lock shared with retained resume admission. Only a clean, contained, provably owned terminal worktree with durable evidence can be removed. Dirty or untracked files, ignored files, Git locks, active ownership, recorded native session dependencies, retained resume admission, changed heads and missing artifacts keep the tree. Every local branch is retained; apply never forces removal or prunes unrelated Git metadata.
+
+Cleanup also requires the canonical base directory recorded when the worktree was created. Older handoffs without that proof remain kept; planning never infers it from the current location. A path redirected outside its creation directory or an invalid handoff manifest prevents removal. Apply validates the full manifest under its write lock before recording a removal attempt or invoking Git.
+
+The plan is claimed once before deletion and records progress in a durable receipt. Repeating a claimed plan displays its receipt without attempting more removals. It can repair a journaled removal's handoff fact only when that directory and Git registration are both gone; a recreated path is retained. After an interruption, inspect the receipt and create a fresh plan for additional work. Cleanup failures leave child outcomes and artifacts intact. `worktree.discard` remains the separate explicitly authorized destructive discard operation.

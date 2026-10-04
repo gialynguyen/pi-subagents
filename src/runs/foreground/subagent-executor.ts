@@ -27,6 +27,7 @@ import { isWorkflowScriptPath, normalizePublicSubagentExecution, validateWorkflo
 import { readReplyWorkflowScript } from "../../extension/reply-workflow-script.ts";
 import { disabledFeatureNotice, disabledFeatureUseError, resolveDisabledFeatureSurface, type DisabledFeatureSurface } from "../../shared/disabled-features.ts";
 import { runSync } from "./execution.ts";
+import { commandAction } from "./command-action.ts";
 import { handleWatchdogToolAction, WATCHDOG_TOOL_ACTIONS } from "../../watchdog/tool-actions.ts";
 import type { MainWatchdogRuntime } from "../../watchdog/runtime.ts";
 import { applyWatchdogLaunchRules } from "../../watchdog/rules.ts";
@@ -77,7 +78,7 @@ import { assertRequiredChildExtensionsAdmitted, hasMandatoryRequiredChildExtensi
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOutputOverride, outputPathMappingFromTask, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { assertJsonSchemaObject, cleanupStructuredOutputRuntime, createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { compactForegroundDetails, getSingleResultOutput, PROMPT_REDACTED, readStatus, resolveChildCwd, sumResultsCost, sumResultsUsage, toAgentToolUsage } from "../../shared/utils.ts";
-import { discardPreservedWorktrees, formatParallelHandoffError, formatParallelHandoffReference, formatStoredParallelHandoffCleanup, parallelHandoffPath, readParallelHandoffManifest, recordParallelHandoffMerge, recordParallelHandoffSupersession, writeParallelHandoffGroup, writeWorktreeSetupHandoff } from "../shared/parallel-handoff.ts";
+import { discardPreservedWorktrees, formatParallelHandoffError, formatParallelHandoffReference, protectRetainedWorktreeForResume, formatStoredParallelHandoffCleanup, parallelHandoffPath, readParallelHandoffManifest, recordParallelHandoffMerge, recordParallelHandoffSupersession, writeParallelHandoffGroup, writeWorktreeSetupHandoff } from "../shared/parallel-handoff.ts";
 import { summarizeContextModes, type ContextMode, type ContextSummary } from "../shared/context-mode.ts";
 import {
 	attachNestedChildrenToResultChildren,
@@ -156,6 +157,7 @@ import {
 	formatWorktreeDiffSummary,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
+import { applyReviewedCleanupPlan, formatCleanupReceipt, loadReviewedCleanupPlan } from "../shared/worktree-cleanup-apply.ts";
 import { createWorktreeCleanupPlan, formatWorktreeCleanupPlan } from "../shared/worktree-cleanup-plan.ts";
 import {
 	type AgentProgress,
@@ -220,8 +222,8 @@ import {
 } from "../../shared/types.ts";
 import { deriveChildSessionName } from "../../shared/child-session-name.ts";
 
-const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete", "eject", "disable", "enable", "reset", "grant-spawn-budget", "watchdog.configure", "mission.create", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "inspector.open", "inspector.close", "project.open", "project.close", "worktree.discard", "worktree.cleanup", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.rollback", "dismiss", "schedule.create", "schedule.pause", "schedule.resume", "schedule.run", "schedule.run-due", "schedule.delete"]);
-const DESTRUCTIVE_MANAGEMENT_ACTIONS = new Set(["delete", "eject", "disable", "reset", "mission.close", "worktree.discard", "refine.rollback", "inspector.close", "project.close", "stop", "interrupt", "schedule.delete"]);
+const MUTATING_MANAGEMENT_ACTIONS = new Set(["command.yield", "command.cancel", "create", "update", "delete", "eject", "disable", "enable", "reset", "grant-spawn-budget", "watchdog.configure", "mission.create", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "inspector.open", "inspector.close", "project.open", "project.close", "worktree.discard", "worktree.cleanup", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.rollback", "dismiss", "schedule.create", "schedule.pause", "schedule.resume", "schedule.run", "schedule.run-due", "schedule.delete"]);
+const DESTRUCTIVE_MANAGEMENT_ACTIONS = new Set(["command.cancel", "delete", "eject", "disable", "reset", "mission.close", "worktree.discard", "refine.rollback", "inspector.close", "project.close", "stop", "interrupt", "schedule.delete"]);
 
 function resolveSteerDeliveryMode(mode: SubagentParamsLike["mode"]): SteerDeliveryMode | undefined {
 	return mode === "steer" || mode === "follow_up" || mode === "auto" ? mode : undefined;
@@ -328,6 +330,7 @@ export interface SubagentParamsLike {
 	merge?: unknown;
 	supersession?: unknown;
 	index?: number;
+	toolCallId?: string;
 	childId?: string;
 	view?: "fleet" | "transcript";
 	lines?: number;
@@ -433,7 +436,7 @@ export interface SubagentParamsLike {
 	every?: string;
 	sessionOnly?: boolean;
 	quiet?: boolean;
-	on?: string | number;
+	on?: string[];
 	timezone?: string;
 	overlap?: "skip";
 	catchUp?: "none" | "latest";
@@ -817,6 +820,7 @@ function rememberForegroundRun(state: SubagentState, input: { modelResponseAlias
 				...(result.error ? { error: result.error } : {}),
 				...(result.finalOutput ? { finalOutput: result.finalOutput } : {}),
 				...(result.outputState ? { outputState: result.outputState } : {}),
+				...(result.outputPartial ? { outputPartial: true } : {}),
 				...(result.outputMode ? { outputMode: result.outputMode } : {}),
 				...(result.savedOutputPath ? { savedOutputPath: result.savedOutputPath } : {}),
 				...(result.outputSaveError ? { outputSaveError: result.outputSaveError } : {}),
@@ -900,6 +904,7 @@ function updateRememberedForegroundChild(state: SubagentState, input: { runId: s
 		...(input.result.error ? { error: input.result.error } : {}),
 		...(input.result.finalOutput ? { finalOutput: input.result.finalOutput } : {}),
 		outputState: input.result.outputState,
+		outputPartial: input.result.outputPartial,
 		outputMode: input.result.outputMode,
 		savedOutputPath: input.result.savedOutputPath,
 		outputSaveError: input.result.outputSaveError,
@@ -2011,6 +2016,18 @@ async function resumeAsyncRun(input: {
 			: "External runners do not persist Pi sessions and cannot be resumed.";
 		return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 	}
+	if (input.params.baseRef !== undefined && "managedWorktree" in target && target.managedWorktree === true) {
+		return { content: [{ type: "text", text: "Cannot resume with baseRef: retained managed-worktree children continue in their existing worktree. Start a new worktree run from that base ref instead." }], isError: true, details: { mode: "management", results: [] } };
+	}
+	if (target.source === "async" && target.managedWorktree && target.asyncDir) {
+		try {
+			const protectedCwd = await protectRetainedWorktreeForResume(parallelHandoffPath(target.asyncDir), target.runId, target.index, input.signal);
+			if (path.resolve(protectedCwd) !== path.resolve(effectiveCwd)) throw new Error("Retained worktree cwd changed during resume admission.");
+		} catch (error) {
+			return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+		}
+	}
+
 	if (target.source === "async" && target.runner?.type === "external-job") {
 		if (attachChain) return { content: [{ type: "text", text: "External-job follow-up does not support chain attachment. Use action='resume' with message instead." }], isError: true, details: { mode: "management", results: [] } };
 		const resumed = await resumeExternalJobFollowUp({
@@ -2155,9 +2172,6 @@ async function resumeAsyncRun(input: {
 	const revivalSessionFile = target.sessionFile;
 	if (!revivalSessionFile) {
 		return { content: [{ type: "text", text: `Async run '${target.runId}' child ${target.index} does not have a persisted session file to resume from.` }], isError: true, details: { mode: "management", results: [] } };
-	}
-	if (input.params.baseRef !== undefined && "managedWorktree" in target && target.managedWorktree === true) {
-		return { content: [{ type: "text", text: "Cannot resume with baseRef: retained managed-worktree children continue in their existing worktree. Start a new worktree run from that base ref instead." }], isError: true, details: { mode: "management", results: [] } };
 	}
 	if (target.source === "async" && asyncReviveRequiresRecoveryDescriptor(target)) {
 		return { content: [{ type: "text", text: `Async child '${target.runId}' is missing its required run fan-out recovery identity. Start a new run instead.` }], isError: true, details: { mode: "management", results: [] } };
@@ -2452,6 +2466,7 @@ async function emitForegroundResultIntercom(input: {
 		...(result.sessionName ? { sessionName: result.sessionName } : {}),
 		status: foregroundResultIntercomStatus(result),
 		outputState: result.outputState ?? "unknown",
+		...(result.outputPartial ? { outputPartial: true } : {}),
 		summary: resultSummaryForIntercom(result),
 		index,
 		artifactPath: result.artifactPaths?.outputPath,
@@ -6642,11 +6657,30 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (deps.allowMutatingManagementActions === false) {
 					return { content: [{ type: "text", text: "Action 'worktree.cleanup' is not available from child-safe subagent fanout mode." }], isError: true, details: { mode: "management", results: [] } };
 				}
+				if (paramsWithResolvedCwd.mode === "apply") {
+					try {
+						if (!paramsWithResolvedCwd.repo?.trim() || !paramsWithResolvedCwd.planId?.trim() || paramsWithResolvedCwd.handoffPath !== undefined) throw new Error("worktree.cleanup apply requires explicit repo and planId, without handoffPath.");
+						const repo = path.resolve(requestCwd, paramsWithResolvedCwd.repo);
+						const plan = loadReviewedCleanupPlan(repo, paramsWithResolvedCwd.planId);
+						const decision = resolveAuthorityDecision({ action: "discardWorktree", ...(deps.config.authorityPolicy === undefined ? {} : { policy: deps.config.authorityPolicy }) });
+						if (decision === "forbid") throw new Error("Authority policy forbids worktree cleanup.");
+						if (decision === "confirm") {
+							if (!ctx.hasUI) throw new Error("Authority policy requires interactive confirmation for worktree cleanup.");
+							if (!await ctx.ui.confirm("Apply reviewed worktree cleanup?", `Repository: ${plan.repoRoot}\nPlan: ${plan.planId}\nRemove up to ${plan.entries.filter((entry) => entry.decision === "remove").length} eligible worktrees. All local branches are retained.`)) return { content: [{ type: "text", text: "Worktree cleanup canceled." }], details: { mode: "management", results: [] } };
+						}
+						const applied = await applyReviewedCleanupPlan({ repo: plan.repoRoot, planId: plan.planId, authorized: true, signal,
+							foregroundRunOwnership: (runId) => deps.state.foregroundControls.has(runId) ? "active" : (deps.state.foregroundRuns?.get(runId)?.children.length && deps.state.foregroundRuns.get(runId)!.children.every((child) => child.status !== "detached")) ? "terminal" : "unknown",
+						});
+						return { content: [{ type: "text", text: formatCleanupReceipt(applied) }], details: { mode: "management", results: [] } };
+					} catch (error) {
+						return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
 				if (paramsWithResolvedCwd.mode !== "plan") {
-					return { content: [{ type: "text", text: "worktree.cleanup currently supports mode='plan' only; apply/removal is not available yet." }], isError: true, details: { mode: "management", results: [] } };
+					return { content: [{ type: "text", text: "worktree.cleanup requires mode='plan' or mode='apply'." }], isError: true, details: { mode: "management", results: [] } };
 				}
 				if (paramsWithResolvedCwd.planId !== undefined) {
-					return { content: [{ type: "text", text: "worktree.cleanup plan mode does not accept planId; apply is not available yet." }], isError: true, details: { mode: "management", results: [] } };
+					return { content: [{ type: "text", text: "worktree.cleanup plan mode does not accept planId." }], isError: true, details: { mode: "management", results: [] } };
 				}
 				try {
 					const created = createWorktreeCleanupPlan({
@@ -6719,7 +6753,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 				}
 			}
-			const policyAction = action === "stop" ? "stopRun" : action === "steer" ? "steerRun" : action === "schedule.create" ? "scheduleCreate" : action === "inspector.open" ? "inspectorOpen" : action === "project.open" ? "projectOpen" : undefined;
+			const policyAction = action === "stop" || action === "command.cancel" ? "stopRun" : action === "steer" || action === "command.yield" ? "steerRun" : action === "schedule.create" ? "scheduleCreate" : action === "inspector.open" ? "inspectorOpen" : action === "project.open" ? "projectOpen" : undefined;
 			if (policyAction) {
 				// Child-safe mode is a hard capability boundary; the policy is an operator
 				// preference. Refuse first, so the gate never prompts for an action that is
@@ -6941,6 +6975,19 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}],
 					details: { mode: "management", results: [], spawnBudget, activeAsyncCapacity },
 				};
+			}
+			if (["command.status", "command.yield", "command.cancel"].includes(action)) {
+				try {
+					if (deps.allowMutatingManagementActions === false && action !== "command.status") throw new Error(`Action '${action}' is not available from child-safe subagent fanout mode.`);
+					const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
+					if (!targetRunId || paramsWithResolvedCwd.dir) throw new Error(`${action} requires id or runId; directory targets are not supported.`);
+					deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+					const target = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+					if (!target) throw new Error(`No run found for '${targetRunId}'.`);
+					return await commandAction({ state: deps.state, target, operation: action.slice("command.".length) as "status" | "yield" | "cancel", index: paramsWithResolvedCwd.index, toolCallId: paramsWithResolvedCwd.toolCallId, signal });
+				} catch (error) {
+					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+				}
 			}
 			if (action === "status" || action === "debug.run") {
 				if (!preserveActiveSession) deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
