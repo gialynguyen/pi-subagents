@@ -40,7 +40,7 @@ import { resolveDisabledFeatureSurface } from "../shared/disabled-features.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession } from "../runs/background/active-async-capacity.ts";
-import { cleanupResultIndexes, missionObserverResultCandidateFiles } from "../runs/background/result-files.ts";
+import { cleanupResultIndexes, missionObserverResultCandidateFiles, resultFilePath } from "../runs/background/result-files.ts";
 import { ASYNC_RETENTION_DELAY_MS, cleanupAsyncRetention } from "../runs/background/async-retention.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
@@ -69,6 +69,7 @@ import { registerSubagentToolActivation } from "./tool-activation.ts";
 import { createWaitSubscriptionManager } from "../runs/background/wait-subscriptions.ts";
 import { drainOutstandingWork } from "../runs/background/auto-drain.ts";
 import registerSubagentNotify, { parseSubagentNotifyContent, type SubagentNotifyDetails } from "../runs/background/notify.ts";
+import { createParentWake } from "../shared/parent-wake.ts";
 import { formatSteeringNotice, handleSubagentSteeringNotice, SUBAGENT_STEERING_MESSAGE_TYPE, type SubagentSteeringMessageDetails } from "./steering-notices.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/child-runtime-config.ts";
 import { disposeChildSessions } from "../runs/shared/child-session.ts";
@@ -87,6 +88,7 @@ import { listRetainedChildren } from "../runs/background/retained-children.ts";
 import {
 	type Details,
 	type MainWindowRendererConfig,
+	type AsyncJobState,
 	type SubagentState,
 	DIRS,
 	DEFAULT_ARTIFACT_CONFIG,
@@ -379,14 +381,27 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, run);
 	};
 
+	// Every notice that wakes the parent goes through parentWake; the watchdog wakes only inside a run.
+	const parentWake = createParentWake(pi);
+	const wakingPi = { events: pi.events, sendMessage: parentWake.sendMessage };
 	const supervisorChannel = createNativeSupervisorChannel(pi, state, {
 		// Owner states are created only by scheduled execution, which loads the executor first.
 		getCurrentOwnerStates: () => executor?.getCurrentSupervisorOwnerStates() ?? [],
+		parentWake,
 	});
-	const waitSubscriptionManager = createWaitSubscriptionManager(pi, state);
+	const waitSubscriptionManager = createWaitSubscriptionManager(wakingPi, state);
 	const mainWatchdog = registerMainWatchdog(pi);
 	const resultDeliveryOwnership = createResultDeliveryOwnership(state);
-	const completionNotifier = registerSubagentNotify(pi, state, { batchConfig: config.completionBatch, ownership: resultDeliveryOwnership });
+	const completionNotifier = registerSubagentNotify(wakingPi, state, { batchConfig: config.completionBatch, ownership: resultDeliveryOwnership });
+	// Ended async runs whose result has not reached the notifier yet.
+	const owedResultRunIds = new Set<string>();
+	// Tracked runs whose result was already delivered, so a later terminal
+	// transition (the tracker can see the end after the result) holds nothing.
+	const deliveredRunIds = new Set<string>();
+	const holdOwedResult = (job: AsyncJobState) => {
+		if (!job.parentWorkflowRunId && !deliveredRunIds.has(job.asyncId) && job.sessionId
+			&& resultDeliveryOwnership.owns(job.sessionId, job.completionOwnerId)) owedResultRunIds.add(job.asyncId);
+	};
 	let retainedNestedRouteTracker: ReturnType<typeof createRetainedNestedRouteTracker> | undefined;
 	const fleetStatus = fleetViewEnabled
 		? new SubagentFleetStatus(state, async (itemKey) => {
@@ -458,6 +473,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 	};
 	const hasResultDeliveryDemand = () => {
+		if (owedResultRunIds.size > 0) return true;
 		if ([...state.asyncJobs.values()].some((job) => job.status === "queued" || job.status === "running")) return true;
 		if (state.foregroundControls.size > 0) return true;
 		if (scheduledRunManager.observedCompletionRunIds().size > 0) return true;
@@ -484,7 +500,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const { ensurePoller, refreshWidget, handleStarted, handleComplete, resetJobs, restoreActiveJobs, dispose: disposeAsyncJobTracker } = createAsyncJobTracker(pi, state, DIRS.async, {
 		widgetEnabled: asyncWidgetEnabled,
 		widgetCollapsed: asyncWidgetCollapsed,
-		onJobTerminal: () => refreshResultDelivery(),
+		onJobTerminal: (job) => {
+			holdOwedResult(job);
+			refreshResultDelivery();
+		},
+		onJobCleanup: (asyncId) => deliveredRunIds.delete(asyncId),
 		supervisorRequestState: supervisorChannel.getSupervisorRequestState,
 	});
 	const resultWatcher = createResultWatcher(
@@ -495,6 +515,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		{
 			notifier: completionNotifier,
 			ownership: resultDeliveryOwnership,
+			onResultDelivered: (runId) => {
+				owedResultRunIds.delete(runId);
+				if (state.asyncJobs.has(runId)) deliveredRunIds.add(runId);
+			},
 			observeCompletion: (result) => scheduledRunManager.handleAsyncCompletion(result),
 			observedCompletionRunIds: () => scheduledRunManager.observedCompletionRunIds(),
 			hasDeliveryDemand: hasResultDeliveryDemand,
@@ -541,6 +565,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const executorDeps: SubagentExecutorDeps = {
 		pi,
+		parentWake,
 		state,
 		config,
 		asyncByDefault,
@@ -794,7 +819,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					const retainedChildren = listRetainedChildren(DIRS.async, ownerSessionId);
 					for (const notice of collectGoalContinuationNotices({ location, ownerSessionId, retainedChildren, turnId: goalTurnId })) {
 						handleSubagentControlNotice({
-							pi,
+							pi: parentWake,
 							state,
 							visibleControlNotices: new Set(),
 							details: { source: "goal", event: notice.event, noticeText: notice.message },
@@ -825,14 +850,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 	const controlEventHandler = (payload: unknown) => {
 		handleSubagentControlNotice({
-			pi,
+			pi: parentWake,
 			state,
 			visibleControlNotices,
 			details: payload as SubagentControlMessageDetails,
 		});
 	};
 	const steeringNoticeHandler = (payload: unknown) => {
-		handleSubagentSteeringNotice({ pi, state, details: payload as SubagentSteeringMessageDetails });
+		handleSubagentSteeringNotice({ pi: parentWake, state, details: payload as SubagentSteeringMessageDetails });
 	};
 	const asyncStartedHandler = (payload: unknown) => {
 		handleStarted(payload);
@@ -842,6 +867,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	const asyncCompleteHandler = (payload: unknown) => {
 		handleComplete(payload);
+		// Detached-workflow reconciliation publishes the result, then ends the job
+		// with this event; the next status refresh sees it already terminal.
+		const job = state.asyncJobs.get((payload as { id?: string } | null)?.id ?? "");
+		if (job && job.status !== "queued" && job.status !== "running"
+			&& fs.existsSync(resultFilePath(DIRS.results, job.asyncId))) holdOwedResult(job);
 		refreshResultDelivery();
 		refreshActiveAsyncCapacity();
 		scheduledRunManager.handleAsyncCompletion(payload);
@@ -922,6 +952,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.supervisorOwnerSessionId = ctx.sessionManager.getSessionId() || null;
 		transitionResultDelivery();
+		owedResultRunIds.clear();
+		deliveredRunIds.clear();
 		state.parentSessionFile = ctx.sessionManager.getSessionFile();
 		state.trustedSessionFileRoot = state.parentSessionFile ? path.join(getAgentDir(), "sessions") : undefined;
 		state.trustedSessionRoots = [...new Set([
@@ -1081,9 +1113,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.on("agent_start", () => {
+		parentWake.agentStarted();
 		resumeWidgetsAfterCompaction();
 		herdrStatusBridge.agentStarted();
 	});
+
+	pi.on("message_start", (event) => completionNotifier.messageStarted(event.message));
 
 	pi.on("agent_settled", () => {
 		resumeWidgetsAfterCompaction();
@@ -1097,7 +1132,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		if (event.reason !== "manual") return;
 		const hasActiveAsyncWork = [...state.asyncJobs.values()].some((job) => job.status === "queued" || job.status === "running");
 		if (!hasActiveAsyncWork || !withLastUiContext(() => true)) return;
-		pi.sendMessage(
+		parentWake.sendMessage(
 			{
 				customType: "subagent-compaction-resume",
 				content: "Compaction is complete. Resume the parent task now; background subagent results will arrive separately when ready.",
@@ -1108,6 +1143,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (event, ctx) => {
+		parentWake.bindSession(ctx);
+		completionNotifier.bindSession(ctx.sessionManager);
 		installRuntime(ctx);
 		startSessionMaintenance();
 		scheduleModulePreload();
@@ -1120,7 +1157,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			? registerPiWebSessionLiveness({
 				sessionId,
 				...(sessionFile ? { sessionFile } : {}),
-				isActive: () => hasLiveSubagentWork(state) || completionNotifier.hasPendingDelivery(),
+				isActive: () => owedResultRunIds.size > 0 || hasLiveSubagentWork(state) || completionNotifier.hasPendingDelivery() || parentWake.isPending(),
 			})
 			: { registered: false, release: () => {} };
 		releaseHostSessionLiveness = liveness.release;
@@ -1137,7 +1174,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		supervisorChannel.activateTransport();
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event) => {
+		completionNotifier.sessionShutdown(event?.reason);
+		parentWake.sessionShutdown(event?.reason);
 		runtimeEntry.cleanup();
 		try {
 			await disposeChildSessions();

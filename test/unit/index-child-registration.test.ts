@@ -44,7 +44,7 @@ describe("subagent extension child mode", () => {
 			const calls = [];
 			const ctx = {
 				cwd: process.cwd(),
-				hasUI: true,
+				isIdle() { return false; }, hasUI: true,
 				ui: {
 					setToolsExpanded(value) { calls.push(value); },
 					setWidget() {},
@@ -111,7 +111,7 @@ describe("subagent extension child mode", () => {
 			registerFanoutChildSubagentExtension(makePi("fanout"), { fanoutChild: true, depth: 1, waitTool: { enabled: true }, fast: false });
 			const expanded = [];
 			const ctx = {
-				cwd: process.cwd(), hasUI: true,
+				cwd: process.cwd(), isIdle() { return false; }, hasUI: true,
 				ui: { setToolsExpanded(value) { expanded.push(value); } },
 				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getBranch() { return []; } },
 				modelRegistry: { getAvailable() { return []; } },
@@ -435,7 +435,7 @@ describe("subagent extension child mode", () => {
 					setStatus() {}, notify() {},
 				};
 				const ctx = {
-					cwd: process.cwd(), hasUI: true, ui,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: true, ui,
 					sessionManager: { getSessionId() { return "slash-theme-session"; }, getSessionFile() { return null; }, getEntries() { return []; } },
 					modelRegistry: { getAvailable() { return []; } },
 				};
@@ -555,7 +555,7 @@ describe("subagent extension child mode", () => {
 			const channelDir = resolveSupervisorChannelDir("nested-reviewer-run", "reviewer", 0);
 			const requestFile = path.join(channelDir, "requests", requestId + ".json");
 			const ctx = {
-				cwd: process.cwd(), hasUI: false,
+				cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 				sessionManager: {
 					getSessionId() { return ownerSessionId; },
 					getSessionFile() { return runtimeSessionId; },
@@ -622,7 +622,7 @@ describe("subagent extension child mode", () => {
 				}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 				const widgets = [];
 				const ctx = {
-					cwd: process.cwd(), hasUI: true,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: true,
 					ui: { setWidget(key, value) { widgets.push({ key, value }); }, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 					sessionManager: { getSessionId() { return "session-widget"; }, getSessionFile() { return null; }, getEntries() { return []; } },
 					modelRegistry: { getAvailable() { return []; } },
@@ -663,7 +663,7 @@ describe("subagent extension child mode", () => {
 				}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 				let widget;
 				const ctx = {
-					cwd: process.cwd(), hasUI: true,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: true,
 					ui: {
 						setWidget(key, value) { if (key === "subagent-async") widget = value; },
 						requestRender() {}, getToolsExpanded() { return false; },
@@ -707,7 +707,7 @@ describe("subagent extension child mode", () => {
 				}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 				const widgets = [];
 				const ctx = {
-					cwd: process.cwd(), hasUI: true,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: true,
 					ui: { setWidget(key, value) { widgets.push({ key, value }); }, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 					sessionManager: { getSessionId() { return "session-widget"; }, getSessionFile() { return null; }, getEntries() { return []; } },
 					modelRegistry: { getAvailable() { return []; } },
@@ -753,7 +753,7 @@ describe("subagent extension child mode", () => {
 			const runId = "management-refresh-" + crypto.randomUUID();
 			const sessionId = "session-" + runId;
 			const ctx = {
-				cwd: process.cwd(), hasUI: true,
+				cwd: process.cwd(), isIdle() { return false; }, hasUI: true,
 				ui: { setWidget(key, value) { widgets.push({ key, value }); }, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 				sessionManager: { getSessionId() { return sessionId; }, getSessionFile() { return null; }, getEntries() { return []; } },
 				modelRegistry: { getAvailable() { return []; } },
@@ -804,8 +804,9 @@ describe("subagent extension child mode", () => {
 				events,
 				on(channel, handler) { handlers.set(channel, [...(handlers.get(channel) ?? []), handler]); },
 				registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
-				sendMessage() {}, getSessionName() { return undefined; },
+				sendMessage(message) { if (message.customType === "subagent-notify") sent.push(message); }, getSessionName() { return undefined; },
 			}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
+			const sent = [];
 			const sessionId = "liveness-" + crypto.randomUUID();
 			const sessionFile = "/tmp/" + sessionId + ".jsonl";
 			let provider;
@@ -819,7 +820,7 @@ describe("subagent extension child mode", () => {
 				},
 			};
 			const ctx = {
-				cwd: process.cwd(), hasUI: false,
+				cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 				ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 				sessionManager: { getSessionId() { return sessionId; }, getSessionFile() { return sessionFile; }, getEntries() { return []; } },
 				modelRegistry: { getAvailable() { return []; } },
@@ -836,6 +837,9 @@ describe("subagent extension child mode", () => {
 			events.emit("subagent:async-complete", { id: "run-1", sessionId: sessionFile, completionOwnerId, success: true, summary: "done" });
 			if (!provider.isActive()) throw new Error("pending completion delivery was not reported live");
 			const deliveryDeadline = Date.now() + 2000;
+			while (sent.length === 0 && Date.now() < deliveryDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+			if (!provider.isActive()) throw new Error("an accepted completion wake was reported idle before Pi started it");
+			for (const handler of handlers.get("message_start")) handler({ message: { role: "custom", ...sent[0] } });
 			while (provider.isActive() && Date.now() < deliveryDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
 			if (provider.isActive()) throw new Error("retained terminal work was reported live after delivery");
 			for (const handler of handlers.get("session_shutdown")) await handler({ reason: "quit" });
@@ -881,7 +885,7 @@ describe("subagent extension child mode", () => {
 					getEntries() { return []; },
 				};
 				const ctx = {
-					cwd: process.cwd(), hasUI: false,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 					ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 					sessionManager,
 					modelRegistry: { getAvailable() { return []; } },
@@ -969,7 +973,7 @@ describe("subagent extension child mode", () => {
 					sendMessage() {}, getSessionName() { return undefined; },
 				}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 				const ctx = {
-					cwd: process.cwd(), hasUI: false,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 					ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 					sessionManager: { getSessionId() { return sessionId; }, getSessionFile() { return null; }, getEntries() { return []; } },
 					modelRegistry: { getAvailable() { return []; } },
@@ -1044,7 +1048,7 @@ describe("subagent extension child mode", () => {
 				sendMessage(message) { sent.push(message); }, getSessionName() { return undefined; },
 			}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 			const ctx = {
-				cwd: process.cwd(), hasUI: false,
+				cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 				ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 				sessionManager: { getSessionId() { return "notify-shutdown-session"; }, getSessionFile() { return null; }, getEntries() { return []; } },
 				modelRegistry: { getAvailable() { return []; } },
@@ -1126,7 +1130,7 @@ describe("subagent extension child mode", () => {
 					sendMessage(message) { sent.push(message); }, getSessionName() { return undefined; },
 				}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
 				const ctx = {
-					cwd: process.cwd(), hasUI: false,
+					cwd: process.cwd(), isIdle() { return false; }, hasUI: false,
 					ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } },
 					sessionManager,
 					modelRegistry: { getAvailable() { return []; } },
@@ -1211,7 +1215,7 @@ describe("subagent extension child mode", () => {
 			let stale = false;
 			const ctx = {
 				cwd: process.cwd(),
-				get hasUI() {
+				isIdle() { return false; }, get hasUI() {
 					if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
 					return true;
 				},
@@ -1272,7 +1276,7 @@ describe("subagent extension child mode", () => {
 			fs.writeFileSync(newSession, "");
 			let currentSession = oldSession;
 			const sessionManager = { getSessionId() { return path.basename(currentSession); }, getSessionFile() { return currentSession; }, getEntries() { return []; } };
-			const ctx = { cwd: process.cwd(), hasUI: false, ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } }, sessionManager, modelRegistry: { getAvailable() { return []; } } };
+			const ctx = { cwd: process.cwd(), isIdle() { return false; }, hasUI: false, ui: { setWidget() {}, requestRender() {}, theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } } }, sessionManager, modelRegistry: { getAvailable() { return []; } } };
 			registerSubagentExtension(pi);
 			for (const handler of handlers.get("session_start")) await handler({ reason: "startup" }, ctx);
 			currentSession = newSession;
@@ -1465,7 +1469,7 @@ describe("subagent extension child mode", () => {
 			if (!registeredTool) throw new Error("tool not registered");
 			const ctx = {
 				cwd: process.cwd(),
-				hasUI: false,
+				isIdle() { return false; }, hasUI: false,
 				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
