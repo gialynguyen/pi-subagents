@@ -226,6 +226,25 @@ Set `enabled` to `false` (or remove the block) as a kill switch. In that state, 
 
 Workflow script calls use background execution when the request omits `async`. Set `asyncByDefault` to `false` to restore foreground-by-default behavior for tool launches that still use the internal single-run primitive. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
 
+## `runnerLaunchers`
+
+```json
+{
+  "runnerLaunchers": {
+    "net": ["nono", "run", "--profile", "net", "--"]
+  }
+}
+```
+
+Named command prefixes that wrap a background runner, for example to run some agents in a different sandbox from the parent. An agent selects one by name with `launcher: net` in its frontmatter; the runner then starts as `<launcher argv> <resolved runner command>`. Agents without `launcher` are unaffected.
+
+- This key is read only from this user config file. Project settings, agent files, and tool calls cannot define a launcher command; an agent file can only name one defined here.
+- Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
+- Each value is a non-empty array of non-blank strings without NUL characters. It is passed to the operating system as an argument list, never through a shell, so quoting and whitespace inside an entry are kept as written.
+- An invalid entry makes config loading fail with an error instead of falling back to defaults. If the file is not valid JSON at all, no launchers are defined, so every agent that names a launcher fails to launch.
+
+See [Sandboxing background children with a launcher](agents.md#sandboxing-background-children-with-a-launcher) for the agent field, the requirements a wrapper must meet, and its limits.
+
 ## `defaultSubagentContext`
 
 ```json
@@ -304,6 +323,36 @@ Controls the under-editor widget for active background runs. It defaults to `tru
 
 Starts each newly mounted under-editor async widget in its one-line folded state. It defaults to `false`. A header click still toggles the widget, and the folded state still resets when the widget is removed or Pi reloads.
 
+## `asyncWidgetLayout`
+
+```json
+{ "asyncWidgetLayout": "rows" }
+```
+
+Sets the layout of the unfolded under-editor async widget. Defaults to `"adaptive"`; valid values are `"adaptive"` and `"rows"`.
+
+`"adaptive"` gives each run its own detail rows while the terminal has room, and switches to one line per run on a short terminal. `"rows"` shows a header line and one line per run even when the terminal has room for detail rows. It uses no more rows than the adaptive layout may: runs that do not fit are counted on a `+N more` line, and a workflow's lanes fill any rows left over. In both layouts, a header click and `asyncWidgetCollapsed` fold the widget to its count line, and Pi's expand key shows the detailed layout.
+
+## `programStatus`
+
+```json
+{ "programStatus": false }
+```
+
+Reports each background run's state to the terminal with [OSC 7501, the Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), so a terminal that supports it (Ghostty and Rex, for example) can show which runs are working, waiting on you, finished, or failed. It defaults to `true`; set it to `false` to send nothing. Terminals that don't support OSC 7501 ignore it, so turn it off only if your terminal prints unknown escape sequences.
+
+Reports are sent only from an interactive TUI session whose standard output is a terminal and whose `TERM` is not `dumb`, and only when a record changes. `PI_PROGRAM_STATUS=0`, Pi's own switch for its OSC 7501 reports, turns these off too. Each run gets its own record under `subagents/`: `subagents/<run>` for a run, where `<run>` is the first 12 characters of its run id, and `subagents/<workflow-run>.<key>` for a background workflow child. A key made only of letters, digits, `_`, `+` and `-`, and at most 19 characters long, is used as is; any other key becomes its first 12 characters (other characters replaced by `-`) plus a short hash of the full key, so different keys never share an id. Workflow children are siblings of their workflow's record, not nested under it, so clearing a finished workflow never removes a running child. The root record belongs to Pi itself, so this extension never writes it.
+
+| Run | Reported state |
+|---|---|
+| queued or running | `working` |
+| running, with a `contact_supervisor` question the parent left unanswered when it finished its turn | `blocked` (`kind=question`) |
+| complete | `done` |
+| failed, partial, or rejected | `error` |
+| stopped or paused | `idle` |
+
+Each record's `title` is the agent names or workflow key, and its `msg` is the current tool while working, or the outcome. Neither includes the task text. Finished runs keep their `done`, `error`, or `idle` record after they leave the async widget, for as long as they are in Fleet's recent history (the last 20 finished runs). Records of runs this session no longer tracks, for example after switching sessions, are cleared. At most 64 records are shown: running and waiting runs first, then finished ones, most recently updated first; older finished records are cleared to make room. When the extension is reloaded or the session is replaced, it clears every record it sent and the new session reports the runs it still tracks. Pi 1.1 and later reports its own state on the root record and clears every record, these included, when it quits, suspends with Ctrl+Z, or opens an external editor. After a suspend, this extension sends its records again; after an external editor, each record comes back the next time it changes. Foreground runs are not reported, and tmux drops these sequences unless you configure passthrough.
+
 ## `waitTool`
 
 ```json
@@ -312,7 +361,7 @@ Starts each newly mounted under-editor async widget in its one-line folded state
 
 `defaultTimeoutMs` sets the blocking window used when a `bg_wait` call omits `timeoutMs`; explicit call values win, followed by this setting, then the 30-minute fallback. `bg_wait` is the only registered wait tool. When the window elapses, the tool returns a non-error `window_elapsed` result with the still-active work identities, and that work keeps running. Set `enabled` to `false` to make direct calls return immediately instead of blocking. The default is enabled. You can also set `"waitTool": false`; set `PI_SUBAGENT_WAIT_TOOL_ENABLED=false` (or `0`, `off`, `disabled`) to override config for one process. The effective enabled and default-timeout values are passed explicitly to child runtimes. Headless `agent_end` auto-drain retains its own strict deadline and fails if required work remains unresolved. Invalid config or environment values fail instead of being coerced.
 
-Blocking `bg_wait({ id: "..." })` keeps the current tool call open until that run changes. By default it returns when a run needs attention. Use `bg_wait({ stopOnAttention: false })` only for run-to-completion flows that should wait through idle or long-thinking attention; supervisor/contact requests still stop the wait. In a long-lived interactive parent session, `bg_wait({ id: "...", nonBlocking: true })` instead resolves the prefix once, persists the exact run identity, returns a subscription token immediately, and wakes that session on completion, failure, attention, reconciliation failure, or timeout. Use it for provider, detached, or other background work without a native completion notification; ordinary async subagent runs notify the parent natively and do not need a wait subscription. Armed subscriptions appear in ordinary `subagent({ action: "status" })` output and are not counted as active child work. Native completion notifications wake the session through the Pi process that launched the run, while that process is still running; a session reopened in a new process does not get that wake and should read the result with `subagent({ action: "status" })`. `nonBlocking` subscriptions need a host with a UI context, such as interactive or RPC mode; plain SDK embedding without a UI context rejects them.
+Blocking `bg_wait({ id: "..." })` keeps the current tool call open until that run changes. By default it returns when a run needs attention. Use `bg_wait({ stopOnAttention: false })` only for run-to-completion flows that should wait through idle or long-thinking attention; supervisor/contact requests still stop the wait. A steer or follow-up the operator sends while a blocking wait is open also ends it, with a non-error `user_input` result listing the still-active work, so the message reaches the model without waiting out the window. In a long-lived interactive parent session, `bg_wait({ id: "...", nonBlocking: true })` instead resolves the prefix once, persists the exact run identity, returns a subscription token immediately, and wakes that session on completion, failure, attention, reconciliation failure, or timeout. Use it for provider, detached, or other background work without a native completion notification; ordinary async subagent runs notify the parent natively and do not need a wait subscription. Armed subscriptions appear in ordinary `subagent({ action: "status" })` output and are not counted as active child work. Native completion notifications wake the session through the Pi process that launched the run, while that process is still running; a session reopened in a new process does not get that wake and should read the result with `subagent({ action: "status" })`. `nonBlocking` subscriptions need a host with a UI context, such as interactive or RPC mode; plain SDK embedding without a UI context rejects them.
 
 This is different from `waitTool.enabled=false`, which returns immediately without registering any future wake. Provider items remain available only to blocking fleet-wide waits; non-blocking subscriptions require one async or remembered detached foreground run id.
 

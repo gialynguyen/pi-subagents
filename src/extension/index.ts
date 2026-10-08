@@ -58,6 +58,7 @@ import {
 	type SupervisorRequestMessageDetails,
 } from "../intercom/supervisor-ui.ts";
 import { registerHerdrStatusBridge, type HerdrStatusRun } from "../integrations/herdr-status.ts";
+import { registerProgramStatusReporter } from "../integrations/program-status.ts";
 import { hasLiveSubagentWork, registerPiWebSessionLiveness } from "../integrations/pi-web-session-liveness.ts";
 import { createRetainedNestedRouteTracker } from "../runs/background/retained-nested-route-tracker.ts";
 import { listHerdrProjectPaneRoots, restoreHerdrProjectPaneSnapshots } from "../inspectors/herdr/project-panes.ts";
@@ -122,7 +123,7 @@ type SubagentExecutor = ReturnType<SubagentExecutorModule["createSubagentExecuto
 type SubagentExecutorDeps = Parameters<SubagentExecutorModule["createSubagentExecutor"]>[0];
 
 interface SubagentRuntimeEntry {
-	cleanup(): void;
+	cleanup(shutdownReason?: string): void;
 	sessionManager: object | null;
 	visibleControlNotices: Set<string>;
 }
@@ -331,6 +332,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const fleetViewPlacement = resolveFleetViewPlacement(config.fleetViewPlacement);
 	const asyncWidgetEnabled = config.asyncWidget !== false;
 	const asyncWidgetCollapsed = config.asyncWidgetCollapsed === true;
+	const asyncWidgetLayout = config.asyncWidgetLayout ?? "adaptive";
 	const summaryInlineToolDisplay = config.inlineToolDisplay === "summary";
 	const tempArtifactsDir = getArtifactsDir(null);
 	const artifactCleanupDays = config.artifactConfig?.cleanupDays ?? DEFAULT_ARTIFACT_CONFIG.cleanupDays;
@@ -383,7 +385,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	// Every notice that wakes the parent goes through parentWake; the watchdog wakes only inside a run.
 	const parentWake = createParentWake(pi);
-	const wakingPi = { events: pi.events, sendMessage: parentWake.sendMessage };
+	const wakingPi = { events: pi.events, sendMessage: parentWake.sendMessage, on: pi.on };
 	const supervisorChannel = createNativeSupervisorChannel(pi, state, {
 		// Owner states are created only by scheduled execution, which loads the executor first.
 		getCurrentOwnerStates: () => executor?.getCurrentSupervisorOwnerStates() ?? [],
@@ -497,15 +499,23 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			agents: merged.agents.map((agent) => agent.maxThinking === discovered.maxThinking ? agent : { ...agent, maxThinking: discovered.maxThinking }),
 		};
 	};
+	const programStatus = registerProgramStatusReporter({
+		enabled: config.programStatus !== false,
+		// Fleet history keeps recent finished runs after the widget drops them.
+		getJobs: () => new Map([...(state.fleetJobs ?? []), ...state.asyncJobs]).values(),
+		getPendingRequests: () => supervisorChannel.pending.values(),
+	});
 	const { ensurePoller, refreshWidget, handleStarted, handleComplete, resetJobs, restoreActiveJobs, dispose: disposeAsyncJobTracker } = createAsyncJobTracker(pi, state, DIRS.async, {
 		widgetEnabled: asyncWidgetEnabled,
 		widgetCollapsed: asyncWidgetCollapsed,
+		widgetLayout: asyncWidgetLayout,
 		onJobTerminal: (job) => {
 			holdOwedResult(job);
 			refreshResultDelivery();
 		},
 		onJobCleanup: (asyncId) => deliveredRunIds.delete(asyncId),
 		supervisorRequestState: supervisorChannel.getSupervisorRequestState,
+		onJobsChanged: programStatus.sync,
 	});
 	const resultWatcher = createResultWatcher(
 		pi,
@@ -1017,9 +1027,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const runtimeEntry: SubagentRuntimeEntry = {
 		sessionManager: null,
 		visibleControlNotices,
-		cleanup() {
+		cleanup(shutdownReason) {
 			if (runtimeCleaned) return;
 			runtimeCleaned = true;
+			programStatus.dispose(shutdownReason);
 			releaseHostSessionLiveness();
 			releaseHostSessionLiveness = () => {};
 			// Workflow continuations retain their launch context; abort them before
@@ -1116,12 +1127,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parentWake.agentStarted();
 		resumeWidgetsAfterCompaction();
 		herdrStatusBridge.agentStarted();
+		programStatus.agentStarted();
 	});
 
 	pi.on("message_start", (event) => completionNotifier.messageStarted(event.message));
 
 	pi.on("agent_settled", () => {
 		resumeWidgetsAfterCompaction();
+		programStatus.agentSettled();
 	});
 
 	pi.on("session_before_compact", (event) => {
@@ -1169,6 +1182,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			hasUI: ctx.hasUI === true,
 			runs: activeHerdrRuns(),
 		});
+		programStatus.sessionStarted({ hasUI: ctx.hasUI === true, mode: ctx.mode });
 		rpcBridge.emitReady(ctx);
 		supervisorChannel.start();
 		supervisorChannel.activateTransport();
@@ -1177,7 +1191,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (event) => {
 		completionNotifier.sessionShutdown(event?.reason);
 		parentWake.sessionShutdown(event?.reason);
-		runtimeEntry.cleanup();
+		runtimeEntry.cleanup(event?.reason);
 		try {
 			await disposeChildSessions();
 		} catch (error) {

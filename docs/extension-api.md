@@ -123,7 +123,7 @@ Method notes:
 - `steer` requires an async run `id` (plus optional child `index`) and a non-empty `message`; its reply preserves the normal acknowledged-delivery result. Optional `mode` values are `steer` (default), `follow_up`, and `auto`, and receipts include `deliveryStatus: "delivered" | "queued"`. RPC steering disables the direct tool's pause-and-revive recovery in every mode so an extension keeps authority over the exact child it spawned; `ping.capabilities.nonRecoveringSteer` advertises this guarantee.
 - `resume` requires a run target and non-empty `message`. It delegates to the existing revival path, which validates current-session ownership, persisted session/recovery metadata, stopped/live state, capability ceilings, and the exclusive session lease before returning the new async run details. Callers may request a `file-only` output path for the revived result without overriding its model, tools, or budgets. `ping.capabilities.resume` advertises this seam.
 - `cost` returns the same parent-plus-child accounting `/subagent-cost` renders, as data: `{ version: 1, parent, children, childTotal, total, unresolvedAsyncChildren }`, where each usage is `{ input, output, cacheRead, cacheWrite, cost, turns }` and each child carries `label`, `agent`, `runId`, `usage`, and `sessionFile` when known. It is read-only and walks the current session branch plus existing run artifacts, so request it on your own turn boundaries (for example after `agent_settled` or an async completion wake), not on a timer. `unresolvedAsyncChildren` counts async children whose metadata could not be read; treat `childTotal` as a lower bound when it is non-zero, exactly as documented for `/subagent-cost` in [observability.md](observability.md). `ping.capabilities.cost` advertises `{ version: 1 }`.
-- `stop` targets current-session top-level async runs through the stop control channel and records a `stopped` lifecycle instead of reporting a timeout.
+- `stop` accepts current-session running or queued async runs and whole paused runs. Paused runs are sealed only with exact observed native runner-terminal proof; missing or unknown proof returns an error even if a stop request was persisted. A successful reply's `state: "stopping"` acknowledges the stop operation for the exact run, not its current lifecycle or retirement. Read status and process-terminal evidence to establish termination. Child-scoped stop remains limited to pending or running children of eligible runs; already-terminal targets are rejected.
 - `status` keeps targeted and rich requests on the executor-backed path. A request with no `id`, `runId`, `dir`, `index`, `view`, or `lines` may use the restored in-memory projections and a short summary; when the live state is missing, stale, session-mismatched, or not restored, it falls back to normal executor status. Status `view`, `lines`, and `index` are forwarded for targeted transcript/fleet requests. Successful replies retain `text`, `details`, `fleet`, and `asyncSnapshot`; the short summary intentionally omits canonical filesystem details, wait subscriptions, and budget annotations.
 
 Capability advertisements on `ping`:
@@ -140,6 +140,20 @@ Capability advertisements on `ping`:
 - `cost: { version: 1 }` — the `cost` method is available and returns the versioned report shape above.
 
 Structured delegation progress updates carry `runId` as soon as foreground execution allocates it, so a caller can retain the package-owned revival target even if its own tool turn is interrupted before the terminal response. Foreground `details.results[]` rows also include a numeric `index` that is unique within the run and stable across partial progress snapshots and the final result; use `(runId, index)` instead of row position to correlate single, counted parallel, and chain children.
+
+### Direct async launch correlation
+
+Direct async runs retain their originating `toolCallId` in status and result
+artifacts. After a lost RPC spawn reply, request `status` with
+`id: "rpc-spawn-<original-requestId>"`. The raw request UUID is not a run ID.
+Default targeted replies expose the resolved `runId` and retained `toolCallId`
+in `data.details`; older artifacts can omit the latter.
+
+Lookup uses the existing run indexes and retained artifacts. Terminal indexing
+keeps the alias after result delivery while the run's status is retained.
+Correlation is not idempotent spawn: multiple runs with one alias are ambiguous, and missing or
+expired evidence never proves that execution did not start. Do not redispatch
+on that basis. Existing ownership checks remain unchanged.
 
 ### Fleet status DTO
 
@@ -495,9 +509,9 @@ An `InspectorPlugin` supplies:
 - `owns(context)`: synchronously check whether the provider owns an inspector binding for this target.
 - Optional `status(context)` and `close(context)`: inspect or close that binding, returning the same result type. Closing an inspector must not stop the subagent.
 
-The existing dispatcher tries Herdr, then Ghostty, then external providers in
+The existing dispatcher tries Herdr, then Ghostty, then tmux, then external providers in
 registration order. Names are case-sensitive; duplicate names and the built-in
-names `herdr` and `ghostty` are rejected. A selected provider's failure is not
+names `herdr`, `ghostty`, and `tmux` are rejected. A selected provider's failure is not
 retried through another provider. Status/close use the first provider whose
 `owns` returns true; unavailable lifecycle methods remain explicit errors.
 Providers own their pane bindings and must verify ownership before closing one.

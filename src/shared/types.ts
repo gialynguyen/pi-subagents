@@ -838,6 +838,8 @@ export interface SteeringRecoveryDescriptor {
 	sessionFile?: string;
 	/** Git ref used to allocate managed worktrees for this run. */
 	baseRef?: string;
+	/** Launcher name the run was wrapped with; resume re-reads its argv from current user config. Absence means unwrapped. */
+	launcher?: string;
 	cwd: string;
 	model?: string;
 	modelProvider?: string;
@@ -1462,8 +1464,8 @@ export interface Details {
 		activeRunIds: string[];
 		activeProviderItems: Array<{ provider: string; id: string }>;
 	} | {
-		/** Non-terminal internal auto-drain yield; tracked work remains active. */
-		reason: "supervisor_request";
+		/** Non-terminal yield for a supervisor request or a user message; tracked work remains active. */
+		reason: "supervisor_request" | "user_input";
 		timedOut: false;
 		activeRunIds: string[];
 		activeProviderItems: Array<{ provider: string; id: string }>;
@@ -1936,6 +1938,8 @@ export interface AsyncStatus {
 	/** Linux PID namespace identity used to scope liveness probes. */
 	pidNamespaceScope?: string;
 	cwd?: string;
+	/** User-configured launcher that wrapped the background runner (argv only, never environment). */
+	launcher?: RunnerLauncher;
 	/** Parent-resolved child session root retained for trusted restored transcript lookup. */
 	sessionRoot?: string;
 	currentStep?: number;
@@ -2425,6 +2429,13 @@ export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 /** pi-intercom asks each session for a fixed intercom ID at session start; `claim(id)` answers synchronously. */
 export const INTERCOM_SESSION_IDENTITY_EVENT = "intercom:session-identity";
 export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
+/** Launcher names are plain identifiers so they survive frontmatter rewrites without quoting. */
+export const RUNNER_LAUNCHER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+export const RUNNER_LAUNCHER_NAME_RULE = "must start with a letter or digit and use only letters, digits, '.', '_' or '-' (at most 128 characters)";
+export interface RunnerLauncher {
+	name: string;
+	argv: string[];
+}
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_PROCESS_TERMINAL_EVENT = "subagent:process-terminal";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
@@ -2622,6 +2633,7 @@ export interface ScheduledRunsConfig {
 }
 
 export type FleetViewPlacement = "aboveEditor" | "belowEditor";
+export type AsyncWidgetLayout = "adaptive" | "rows";
 
 export const FLEET_KEYBINDING_ACTIONS = [
 	"close",
@@ -2685,8 +2697,14 @@ export interface ExtensionConfig {
 	asyncWidget?: boolean;
 	/** Start the under-editor async runs widget folded. Defaults to false. */
 	asyncWidgetCollapsed?: boolean;
+	/** Unfolded async runs widget layout: "adaptive" fits run details to the terminal height, "rows" shows one line per run. Defaults to "adaptive". */
+	asyncWidgetLayout?: AsyncWidgetLayout;
+	/** Report subagent run state to the terminal with OSC 7501. Defaults to true. */
+	programStatus?: boolean;
 	/** Exact provider/model candidates mapped to operator-declared equivalent response IDs. Empty arrays add no accepted IDs. */
 	modelResponseAliases?: Record<string, string[]>;
+	/** Named argv prefixes for background runners; agents select one with `launcher: <name>`. User config only. */
+	runnerLaunchers?: Record<string, string[]>;
 	/** Tool description variant registered for the parent-facing subagent tool. Defaults to split metadata. */
 	toolDescriptionMode?: ToolDescriptionMode;
 	/** How a new parent session offers the subagent tool. Defaults to auto. */
