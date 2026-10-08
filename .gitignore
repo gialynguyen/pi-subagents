@@ -1,5 +1,4 @@
-.pi/todos/
-.pi/subagents/
+.pi/
 .pi-subagents/
 .DS_Store
 node_modules/
