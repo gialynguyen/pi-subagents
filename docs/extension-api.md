@@ -19,7 +19,7 @@ registerWorkflowResource({
 }): { dispose(): void }
 ```
 
-Names are case-sensitive, at most 128 characters, and match `[A-Za-z0-9][A-Za-z0-9._-]*`; use an extension prefix. Versions are positive safe integers. Registration throws for invalid input, protected builtins (`review`, `run-ci`, and `chain` and `tasks`, which back the tool's structured inputs), or duplicate names within the same session. Different sessions may register the same name. Dispose before replacement; there is no silent overwrite.
+Names are case-sensitive, at most 128 characters, and match `[A-Za-z0-9][A-Za-z0-9._-]*`; use an extension prefix. Versions are positive safe integers. Registration throws for invalid input, protected builtins (`review`, `run-ci`, `parallel`, and `chain` and `tasks`, which back the tool's structured inputs), or duplicate names within the same session. Different sessions may register the same name. Dispose before replacement; there is no silent overwrite.
 
 Register in `session_start` using **`ctx.sessionManager.getSessionId()`**, not the session file path or a tool argument. Dispose in `session_shutdown`. New/resumed/forked sessions and reloads need registration from the replacement runtime's `session_start`; do not retain old `pi`/`ctx` references. The extension owns cleanup, not an automatic registration lifecycle manager. Disposal is idempotent and cannot remove a newer replacement. Missing cleanup can cause a duplicate-registration failure on reload.
 
@@ -153,7 +153,7 @@ Lookup uses the existing run indexes and retained artifacts. Terminal indexing
 keeps the alias after result delivery while the run's status is retained.
 Correlation is not idempotent spawn: multiple runs with one alias are ambiguous, and missing or
 expired evidence never proves that execution did not start. Do not redispatch
-on that basis. Existing ownership checks remain unchanged.
+on that basis.
 
 ### Fleet status DTO
 
@@ -278,6 +278,7 @@ Preflight covers ordinary single-agent launch resolution:
 - A parsed-definition digest, including system prompt and launch-affecting model, tool, skill, extension, output, and memory fields. Runtime overlays such as the Intercom bridge never change it.
 - Fresh/fork context, effective model and thinking, skill and tool resolution, direct MCP selections, runtime/configured extensions. Pass your extension's `pi` as `runtimeSnapshotHost` so `mcp:` selections resolve against Pi's built-in MCP the way a launch does. Without it, preflight cannot see built-in MCP and resolves `mcp:` selections through pi-mcp-adapter's configuration, as before.
 - Model scope allow lists accept the reserved tokens `inherit` and `scoped`; `scoped` expands to the caller-supplied `scopedModelIds` snapshot, degrading to `inherit` when it is omitted. Callers whose `modelScope.allow` uses `scoped` must pass `scopedModelIds` (the session's `/scoped-models` snapshot) alongside `parentModel`, otherwise preflight resolves it as `inherit` and may reject models the actual launch allows.
+- Pass `projectTrusted: ctx.isProjectTrusted()` to match a session that declined project trust. With `false`, project agents and project subagent settings are ignored and an explicit `agentScope: "project"` returns `restricted_agent`. It defaults to `true`.
 - The resolved Intercom bridge state (`intercomBridge.mode` and `intercomBridge.active`). An active bridge appends the bridge instruction to the child prompt and adds `contact_supervisor` to a declared tool list, exactly as execution does.
 - Artifact/session paths, async lifecycle/status/result/event/process-terminal paths, package/lifecycle versions, capability-ceiling audit data, and stable digests.
 
@@ -459,10 +460,10 @@ The async runner process does not import provider internals. It writes operation
 Inspect is the portable command and action surface for an existing async run. The public actions are:
 
 ```ts
-subagent({ action: "inspector.command", id: "<run-id>", index: 0 })
-subagent({ action: "inspector.open", id: "<run-id>", index: 0, focus: true })
-subagent({ action: "inspector.status", id: "<run-id>", index: 0 })
-subagent({ action: "inspector.close", id: "<run-id>", index: 0 })
+subagent({ action: "inspector.command", id: "<run-id>", options: { index: 0 } })
+subagent({ action: "inspector.open", id: "<run-id>", options: { index: 0, focus: true } })
+subagent({ action: "inspector.status", id: "<run-id>", options: { index: 0 } })
+subagent({ action: "inspector.close", id: "<run-id>", options: { index: 0 } })
 ```
 
 `inspector.command` returns a standalone runner command without contacting a host or writing a binding. `inspector.open` selects an available built-in or externally registered inspector plugin. `status` and `close` select the plugin that owns the run binding and report clearly when that plugin does not support the requested lifecycle action. Without an available plugin, `open` fails closed with an actionable message; ordinary launches remain headless. Closing an inspector never stops the run.
@@ -595,7 +596,17 @@ The API returns discriminated structured results with canonical project root, bi
 
 A host that embeds this extension owns whether completion wakes can be delivered at all.
 
-Ordinary async and foreground completion wakes use `registerSubagentNotify` and `sendCompletion`. They listen for completion events and deliver through `pi.sendMessage(..., { triggerTurn })`. When the parent is idle, every pi-subagents notice that should start a turn (completions, supervisor asks, control and steering notices, wait subscriptions) is instead appended without a turn, followed by one short user message, `Subagent updates above.`, sent with `pi.sendUserMessage`. Pi runs `before_agent_start` only for prompts, so this keeps extension-set system prompt sections in the woken run. A busy parent still gets the notice as a steering message. Session shutdown stops the result watcher and disposes this completion notifier. `createWaitSubscriptionManager` is separate: it is the explicit non-blocking `bg_wait` subscription path for work without native notification, not the ordinary completion wake path.
+Ordinary async and foreground completion wakes use `registerSubagentNotify` and `sendCompletion`. They listen for completion events and deliver through `pi.sendMessage(..., { triggerTurn })`. When the parent is idle, every pi-subagents notice that should start a turn (completions, supervisor asks, control and steering notices, wait subscriptions) is instead appended without a turn, followed by one user message, `PARENT_WAKE_TEXT` from `src/shared/parent-wake.ts`, sent with `pi.sendUserMessage`. Pi runs `before_agent_start` only for prompts, so this keeps extension-set system prompt sections in the woken run. A busy parent still gets the notice as a steering message. After the user aborts a parent run in a host with a UI, these notices are only appended, with no turn and no wake message, until the next parent run starts. Session shutdown stops the result watcher and disposes this completion notifier. `createWaitSubscriptionManager` is separate: it is the explicit non-blocking `bg_wait` subscription path for work without native notification, not the ordinary completion wake path.
+
+Each completion notice is a custom message with `customType: "subagent-notify"`. Its `content` is the text the model reads. Pi does not send `details` to the model, so hosts can use it to match a notice to its runs by id without parsing the text. `details.runs` has one entry per finished run, in the order of the notice. A grouped notice has several entries. Each entry has `agent` and `status` (`completed`, `failed`, `paused` or `stopped`). When known, an entry also has these fields:
+
+- `runId`: the finished run's id. For a workflow it equals `workflowRunId`.
+- `workflowRunId`: set only for workflows.
+- `childRuns`: `{ runId, workflowKey?, agent?, status }` for each workflow, chain or parallel child.
+- `childOutputs`: the per-child saved output paths of a workflow.
+- `source`, `durationMs`, `asyncDir`, `workflowReceiptPath`, `handoffPath`, and `sessionLabel` with `sessionValue` (a session file, share URL or share error).
+
+Entries can also carry other values the notice text is built from, such as `scheduleOrigin` and `watchdogBlockers`. The output previews are only in `content`.
 
 Detached children do not stop when the session does. They are the host process's children, not the session's, so the run keeps going, completes, and notifies nobody. What is lost is the notification, not the work.
 

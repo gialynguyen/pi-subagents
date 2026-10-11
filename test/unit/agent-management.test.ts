@@ -1072,8 +1072,6 @@ Advise only.
 		const agentPath = path.join(tempDir, ".pi", "agents", "sandboxed.md");
 		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
 		fs.writeFileSync(agentPath, "---\nname: sandboxed\ndescription: Sandboxed agent\nlauncher: net\n---\nOriginal prompt.\n");
-		const setLauncher = handleUpdate({ agent: "sandboxed", config: { launcher: "other" } }, ctx);
-		assert.equal(setLauncher.isError, true);
 		const external = handleUpdate({ agent: "sandboxed", config: { runner: { type: "external-cli", command: "node" } } }, ctx);
 		assert.equal(external.isError, true);
 		assert.match(readText(external), /cannot be combined with this agent's 'launcher'/);
@@ -1081,7 +1079,6 @@ Advise only.
 		const updated = handleUpdate({ agent: "sandboxed", config: { description: "Updated agent" } }, ctx);
 		assert.equal(updated.isError, false);
 		assert.match(fs.readFileSync(agentPath, "utf-8"), /^launcher: net$/m);
-		assert.equal(discoverAgents(tempDir, "project").agents.find((agent) => agent.name === "sandboxed")?.launcher, "net");
 	});
 
 	it("fails when extension frontmatter cannot be reread", () => {
@@ -1246,7 +1243,7 @@ Drive the failing test first.
 	});
 
 	for (const action of ["model", "thinking"]) {
-		it(`awaits an offline registry refresh before opening the ${action} picker`, async () => {
+		it(`awaits an offline registry refresh before opening the ${action} picker over RPC`, async () => {
 			const agentPath = path.join(tempDir, ".pi", "agents", "refresh-worker.md");
 			fs.mkdirSync(path.dirname(agentPath), { recursive: true });
 			fs.writeFileSync(agentPath, "---\nname: refresh-worker\ndescription: Refresh test\nmodel: custom/fresh\n---\nPrompt.\n");
@@ -1254,7 +1251,7 @@ Drive the failing test first.
 			let choices: string[] = [];
 			const warnings: string[] = [];
 			await openSubagentsAdmin({ sendMessage: () => assert.fail("cancel must not save") } as never, {
-				cwd: tempDir, hasUI: true,
+				cwd: tempDir, hasUI: true, mode: "rpc",
 				modelRegistry: {
 					refresh: async (options: { allowNetwork: boolean; signal: AbortSignal }) => {
 						assert.equal(options.allowNetwork, false);
@@ -1268,6 +1265,8 @@ Drive the failing test first.
 						: [],
 				},
 				ui: {
+					// RPC mode defines ui.custom as a no-op that resolves undefined.
+					custom: async () => undefined,
 					select: async (_title: string, items: string[]) => { choices = items; return undefined; },
 					notify: (message: string) => warnings.push(message),
 				},

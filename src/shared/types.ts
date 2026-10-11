@@ -2293,6 +2293,8 @@ export interface ForegroundRunControl {
 	interrupt?: () => boolean;
 	detach?: () => boolean;
 	steer?: ForegroundChildControl["steer"];
+	/** Set while a detached child runs: records it as stopped, then aborts it, when this runtime is replaced. */
+	stopForRuntimeReplacement?: () => void;
 }
 
 export interface WaitSubscriptionRecord {
@@ -2472,6 +2474,8 @@ export interface SubagentChildStatusEvent {
 export interface ForegroundChildSessionControls {
 	steer: (text: string) => Promise<void>;
 	followUp: (text: string) => Promise<void>;
+	/** Abort the live child and report the run as stopped with `reason`. */
+	stop: (reason: string) => void;
 }
 
 export interface RunSyncOptions {
@@ -2491,6 +2495,8 @@ export interface RunSyncOptions {
 	permissions?: import("../runs/shared/permissions.ts").PermissionConfig;
 	/** Session id of the direct parent session for permission-system ask forwarding. */
 	parentSessionId?: string;
+	/** The parent session's file, recorded as a new child session's `parentSession` header. */
+	parentSessionFile?: string;
 	/** Resolved launch context for this child. */
 	context?: "fresh" | "fork";
 	cwd?: string;

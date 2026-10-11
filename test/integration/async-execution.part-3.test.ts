@@ -381,12 +381,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const call = await waitForMockPiCall(mockPi, 0);
 		const taskArg = call.args.at(-1) ?? "";
 		const systemPrompt = call.systemPrompts[0]?.text ?? "";
-		for (const instruction of [taskArg, systemPrompt]) {
-			assert.match(instruction, /Return the complete artifact in your final response\./);
-			assert.match(instruction, /runtime will persist it to exactly this path:/);
-			assert.match(instruction, /Do not call contact_supervisor merely because no write-capable tool is available\./);
-			assert.doesNotMatch(instruction, /Write your findings to exactly this path/);
-		}
+		assert.match(taskArg, /Return the complete artifact in your final response\./);
+		assert.match(taskArg, /runtime will persist it to exactly this path:/);
+		assert.match(taskArg, /Do not call contact_supervisor merely because no write-capable tool is available\./);
+		assert.doesNotMatch(taskArg, /Write your findings to exactly this path/);
+		assert.doesNotMatch(systemPrompt, /runtime will persist it to exactly this path:/);
 		const deadline = Date.now() + 10_000;
 		while (!fs.existsSync(resultPath)) {
 			if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
@@ -473,7 +472,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
 	});
 
-	it("background single runs make output overrides authoritative in the child system prompt", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background single runs deliver the output override in the task and keep it out of the child system prompt", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "async override report" });
 		const id = `async-output-override-system-prompt-${Date.now().toString(36)}`;
 		const outputPath = path.join(tempDir, "async-custom-report.md");
@@ -504,10 +503,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const taskArg = call.args.at(-1) ?? "";
 		const systemPrompt = call.systemPrompts[0]?.text ?? "";
 		assert.match(taskArg, new RegExp(`Write your findings to exactly this path: ${escapeRegExp(outputPath)}`));
+		assert.match(taskArg, /Ignore any other output filename or output path mentioned elsewhere/);
 		assert.match(systemPrompt, /Output format \(`default-report\.md`\):/);
-		assert.match(systemPrompt, /Runtime output path override:/);
-		assert.match(systemPrompt, new RegExp(`Write your findings to exactly this path: ${escapeRegExp(outputPath)}`));
-		assert.match(systemPrompt, /Ignore any other output filename or output path mentioned elsewhere/);
+		assert.doesNotMatch(systemPrompt, new RegExp(escapeRegExp(outputPath)));
 		await waitForAsyncResultFile(id);
 	});
 
@@ -1979,8 +1977,9 @@ syncBuiltinESMExports();
 		}
 	});
 
-	it("append-step queues only agents whose launcher matches the running runner's", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("append-step queues only agents whose launcher matches the running runner's, refusing before progress files are written", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const budget = (runId: string) => createRunFanoutBudget(runId, 8);
+		const progressPath = path.join(tempDir, "progress.md");
 		const agents = [makeAgent("worker"), makeAgent("netA", { launcher: "a" }), makeAgent("netA2", { launcher: "a" }), makeAgent("netB", { launcher: "b" })];
 		const executor = makeAsyncExecutor(agents, { runnerLaunchers: { a: ["true"], b: ["true"] } });
 		const cases: Array<[{ name: string; argv: string[] } | undefined, string, boolean]> = [
@@ -2000,7 +1999,8 @@ syncBuiltinESMExports();
 					...(launcher ? { launcher } : {}), steps: [{ agent: launcher ? "netA" : "worker", status: "running" }],
 				}));
 				writeRunFanoutBudgetDescriptor(asyncDir, runBudget);
-				const result = await executor.execute(`append-launcher-${index}`, { action: "append-step", id: runId, step: { agent, task: "Work" } }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
+				fs.writeFileSync(progressPath, "existing progress\n");
+				const result = await executor.execute(`append-launcher-${index}`, { action: "append-step", id: runId, step: { parallel: [{ agent, task: "Work", progress: true }] } }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
 				if (admitted) {
 					assert.equal(result.isError, undefined, result.content[0]?.text);
 					assert.equal(readPendingChainAppendRequests(asyncDir).length, 1);
@@ -2010,36 +2010,12 @@ syncBuiltinESMExports();
 					assert.match(result.content[0]?.text ?? "", /its runner uses (?:launcher '\w+'|no launcher), but the appended agents use/);
 					assert.equal(readPendingChainAppendRequests(asyncDir).length, 0);
 					assert.deepEqual(getRunFanoutBudgetSnapshot(runBudget), { used: 0, limit: 8, remaining: 8 });
+					assert.equal(fs.readFileSync(progressPath, "utf-8"), "existing progress\n");
 				}
 			} finally {
 				fs.rmSync(asyncDir, { recursive: true, force: true });
 				fs.rmSync(runBudget.directory, { recursive: true, force: true });
 			}
-		}
-	});
-
-	it("append-step refuses a launcher mismatch before writing progress files", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
-		const runId = `append-launcher-progress-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, runId);
-		const runBudget = createRunFanoutBudget(runId, 8);
-		const progressPath = path.join(tempDir, "progress.md");
-		try {
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId, sessionId: "session-123", mode: "chain", state: "running", startedAt: 100, lastUpdate: 200, cwd: tempDir, chainStepCount: 1,
-				launcher: { name: "a", argv: ["true"] }, steps: [{ agent: "netA", status: "running" }],
-			}));
-			writeRunFanoutBudgetDescriptor(asyncDir, runBudget);
-			fs.writeFileSync(progressPath, "existing progress\n");
-			const executor = makeAsyncExecutor([makeAgent("netA", { launcher: "a" }), makeAgent("netB", { launcher: "b" })], { runnerLaunchers: { a: ["true"], b: ["true"] } });
-			const result = await executor.execute("append-launcher-progress", { action: "append-step", id: runId, step: { parallel: [{ agent: "netB", task: "Implement the change", progress: true }] } }, new AbortController().signal, undefined, makeMinimalCtx(tempDir)) as AsyncExecutionResult;
-			assert.equal(result.isError, true);
-			assert.match(result.content[0]?.text ?? "", /its runner uses launcher 'a', but the appended agents use launcher 'b'/);
-			assert.equal(fs.readFileSync(progressPath, "utf-8"), "existing progress\n");
-			assert.equal(readPendingChainAppendRequests(asyncDir).length, 0);
-		} finally {
-			fs.rmSync(asyncDir, { recursive: true, force: true });
-			fs.rmSync(runBudget.directory, { recursive: true, force: true });
 		}
 	});
 
