@@ -3013,8 +3013,8 @@ describe("scripted workflow runtime", () => {
 			});
 
 			await runMessageCaptured;
-			controller.abort(new Error("Workflow stopped by user."));
-			await assert.rejects(workflow, (error: unknown) => error instanceof WorkflowScriptError && error.message === "Workflow stopped by user.");
+			controller.abort(new Error("Workflow stopped."));
+			await assert.rejects(workflow, (error: unknown) => error instanceof WorkflowScriptError && error.message === "Workflow stopped.");
 			deliverCapturedRunMessage?.();
 			await new Promise((resolve) => queueMicrotask(resolve));
 			assert.equal(launchCount, 0);
@@ -3034,7 +3034,7 @@ describe("scripted workflow runtime", () => {
 				signal: controller.signal,
 				onTrace(trace) {
 					const started = trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "started");
-					if (started && !controller.signal.aborted) controller.abort(new Error("Workflow stopped by user."));
+					if (started && !controller.signal.aborted) controller.abort(new Error("Workflow stopped."));
 				},
 				admit() {
 					admitCount += 1;
@@ -3046,7 +3046,7 @@ describe("scripted workflow runtime", () => {
 				async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
 			}),
 			(error: unknown) => error instanceof WorkflowScriptError
-				&& error.message === "Workflow stopped by user."
+				&& error.message === "Workflow stopped."
 				&& error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "stopped")
 				&& !error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "failed"),
 		);
@@ -3079,10 +3079,10 @@ describe("scripted workflow runtime", () => {
 		});
 
 		await admissionStarted;
-		controller.abort(new Error("Workflow stopped by user."));
+		controller.abort(new Error("Workflow stopped."));
 		assert.equal(admissionSignal?.aborted, true);
 		await assert.rejects(workflow, (error: unknown) => error instanceof WorkflowScriptError
-			&& error.message === "Workflow stopped by user."
+			&& error.message === "Workflow stopped."
 			&& error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "stopped")
 			&& !error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "failed"));
 		resolveAdmission();
@@ -3149,10 +3149,10 @@ describe("scripted workflow runtime", () => {
 				async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
 			});
 			await launchStarted;
-			controller.abort(new Error("Workflow stopped by user."));
+			controller.abort(new Error("Workflow stopped."));
 			await assert.rejects(workflow, (error: unknown) => error instanceof WorkflowScriptError
-				&& error.message === "Workflow stopped by user."
-				&& error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "stopped" && entry.error === "Workflow stopped by user.")
+				&& error.message === "Workflow stopped."
+				&& error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "stopped" && entry.error === "Workflow stopped.")
 				&& !error.partial.trace.some((entry) => entry.operation === "run" && entry.key === "slow" && entry.state === "failed"));
 			workflowSettled = true;
 			resolveLaunch({ key: "slow", ok: true, output: "done", artifactPaths: [], results: [] });
@@ -3173,7 +3173,7 @@ describe("scripted workflow runtime", () => {
 				signal: controller.signal,
 				onTrace(trace) {
 					const started = trace.some((entry) => entry.operation === "status" && entry.key === "probe" && entry.state === "started");
-					if (started && !controller.signal.aborted) controller.abort(new Error("Workflow stopped by user."));
+					if (started && !controller.signal.aborted) controller.abort(new Error("Workflow stopped."));
 				},
 				async launch(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
 				async status(key) {
@@ -3182,7 +3182,7 @@ describe("scripted workflow runtime", () => {
 				},
 			}),
 			(error: unknown) => error instanceof WorkflowScriptError
-				&& error.message === "Workflow stopped by user."
+				&& error.message === "Workflow stopped."
 				&& error.partial.trace.some((entry) => entry.operation === "status" && entry.key === "probe" && entry.state === "started")
 				&& !error.partial.trace.some((entry) => entry.operation === "status" && entry.key === "probe" && entry.state === "completed"),
 		);
@@ -3209,9 +3209,9 @@ describe("scripted workflow runtime", () => {
 		});
 
 		await statusStarted;
-		controller.abort(new Error("Workflow stopped by user."));
+		controller.abort(new Error("Workflow stopped."));
 		await assert.rejects(workflow, (error: unknown) => error instanceof WorkflowScriptError
-			&& error.message === "Workflow stopped by user."
+			&& error.message === "Workflow stopped."
 			&& error.partial.trace.some((entry) => entry.operation === "status" && entry.key === "probe" && entry.state === "started")
 			&& !error.partial.trace.some((entry) => entry.operation === "status" && entry.key === "probe" && entry.state === "completed"));
 		const finalTraceLength = traceLengths.at(-1);
@@ -3419,6 +3419,14 @@ describe("scripted workflow runtime", () => {
 		const result = spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "--require", preload, fixture], { encoding: "utf-8" });
 		assert.equal(result.status, 0, result.stderr);
 		assert.deepEqual(JSON.parse(result.stdout), { ok: true, value: { output: "pong" } });
+	});
+
+	it("runs Promise.all and other Promise statics when the host freezes Promise", () => {
+		const preload = path.resolve("test/fixtures/frozen-promise-statics-preload.cjs");
+		const fixture = path.resolve("test/fixtures/frozen-promise-statics-workflow.ts");
+		const result = spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "--require", preload, fixture], { encoding: "utf-8" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout), { ok: true, value: { outputs: ["pong", "pong", "pong"], d: "ready" } });
 	});
 
 	it("rejects an unavailable recovery target without falling back from a stale cwd", {
